@@ -53,6 +53,14 @@
   .note{background:#fffbeb;border:1px solid #fde68a;color:#78350f;border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:12px}
   .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--line)}
   .kv.t{font-weight:700;border-bottom:0;border-top:2px solid var(--line);margin-top:4px;padding-top:8px}
+  .sc-wrap{position:relative}
+  .sc-wrap svg{display:block;width:100%;height:auto;overflow:visible}
+  .sc-hit{fill:transparent;cursor:pointer}
+  .sc-tip{position:absolute;pointer-events:none;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.15);padding:8px 10px;font-size:12.5px;line-height:1.5;z-index:5;white-space:nowrap;display:none}
+  .sc-tip b{font-size:14px}
+  .sc-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 12px}
+  .sc-stats>div{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .sc-stats .v{font-size:18px;font-weight:700}
   .empty{padding:24px;text-align:center;color:var(--mute);background:var(--card);border:1px dashed var(--line);border-radius:12px}
   .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;align-items:center}
   .toolbar input,.toolbar select{width:auto;flex:1 1 150px;min-width:130px;max-width:240px}
@@ -77,6 +85,11 @@
   button:disabled{opacity:.6;cursor:not-allowed}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
   @keyframes sp{to{transform:rotate(360deg)}}
+  .boot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:50vh;color:var(--mute);font-weight:500}
+  .boot .ring{width:46px;height:46px;border:4px solid #dbe4f5;border-top-color:var(--pri);border-radius:50%;animation:sp .8s linear infinite}
+  .boot .dots::after{content:'';animation:bd 1.4s steps(4,end) infinite}
+  @keyframes bd{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+  @media (prefers-reduced-motion:reduce){.boot .ring{animation-duration:2.4s}}
   button.btn.danger{background:var(--neg)}
   #savTbl{scroll-margin-top:72px}
   .dash{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:16px}
@@ -115,7 +128,7 @@
   </nav>
 </div></header>
 <main>
-  <section id="t-dash" class="tab on"></section>
+  <section id="t-dash" class="tab on"><div class="boot" role="status" aria-live="polite"><div class="ring"></div><div>Đang tải dữ liệu<span class="dots"></span></div><div class="sub">Lần mở đầu có thể mất vài giây</div></div></section>
   <section id="t-sav" class="tab"></section>
   <section id="t-inv" class="tab"></section>
   <section id="t-sal" class="tab"></section>
@@ -128,7 +141,7 @@
 <script>
 var S = null;
 var TYPE_LABEL = { DEMAND: 'Không kỳ hạn', TERM_END: 'Có kỳ hạn - lãi cuối kỳ', TERM_MONTHLY: 'Có kỳ hạn - lãi hàng tháng' };
-var CUR_LABEL = { VND: 'VND (₫)', USD: 'USD ($)', EUR: 'EUR (€)', JPY: 'JPY (¥)', SGD: 'SGD (S$)' };
+var CUR_LABEL = { VND: 'VND (₫)', USD: 'USD ($)', EUR: 'EUR (€)', JPY: 'JPY (¥)', SGD: 'SGD (S$)', GBP: 'GBP (£)', HKD: 'HKD (HK$)', AUD: 'AUD (A$)', CNY: 'CNY (¥)', KRW: 'KRW (₩)' };
 var ASSET_LABEL = { STOCK: 'Cổ phiếu', FUND: 'Chứng chỉ quỹ', ETF: 'ETF', OTHER: 'Khác' };
 
 // ---------- tiện ích ----------
@@ -186,7 +199,11 @@ function call(action, payload){
   });
 }
 function load(){
-  return call('bootstrap').then(function(d){ S = d; renderAll(); }).catch(function(e){ bad('Lỗi tải dữ liệu: ' + e.message); });
+  return call('bootstrap').then(function(d){ S = d; renderAll(); }).catch(function(e){
+    bad('Lỗi tải dữ liệu: ' + e.message);
+    var b = document.querySelector('#t-dash .boot');
+    if (b) b.innerHTML = '<div class="neg">Không tải được dữ liệu.</div><div class="sub">' + esc(e.message) + '</div><button class="btn" onclick="location.reload()">Tải lại</button>';
+  });
 }
 
 // ---------- tab ----------
@@ -251,16 +268,22 @@ var FORMS = {
     {k:'value', l:'Giá trị mới (số; riêng biểu thuế/lương tối thiểu vùng nhập đúng định dạng ở bảng Cài đặt)', t:'text'},
     {k:'note', l:'Ghi chú', t:'text'} ],
     def: function(){ return {from: S.today.slice(0,7), key: S.configInfo[0].key}; } },
+  expense: { title: 'Khoản chi hàng tháng', fields: [
+    {k:'name', l:'Khoản chi (VD: Điện + nước, Chi phí cho con)', t:'text'},
+    {k:'amount', l:'Số tiền ước tính mỗi tháng (₫)', t:'number', step:'any'},
+    {k:'status', l:'Trạng thái', t:'select', o:{active:'Đang tính', paused:'Tạm không tính'}},
+    {k:'note', l:'Ghi chú', t:'text'} ],
+    def: function(){ return {status:'active'}; } },
   price: { title: 'Giá hiện tại', fields: [
     {k:'symbol', l:'Mã', t:'text'},
     {k:'price', l:'Giá hiện tại nhập tay (₫). Có thể để trống nếu dùng giá tự động bên dưới', t:'number', step:'any'},
     {k:'auto', l:'Giá tự động: mã Google Finance, VD: NASDAQ:NXPI (cổ phiếu nước ngoài). Để trống = nhập tay. Cổ phiếu HOSE/HNX và chứng chỉ quỹ Việt Nam thường không có, hãy nhập tay', t:'text'},
-    {k:'fx', l:'Tiền tệ của giá tự động (USD → tự quy đổi sang ₫ theo tỷ giá Google)', t:'select', o:{'':'VND (không quy đổi)', USD:'USD', EUR:'EUR', JPY:'JPY', SGD:'SGD'}} ],
+    {k:'fx', l:'Tiền tệ của mã này (USD...). Giá tự động được quy đổi sang ₫ theo tỷ giá Google; bảng Đầu tư sẽ hiển thị giá theo tiền tệ này', t:'select', o:{'':'VND (không quy đổi)', USD:'USD', EUR:'EUR', JPY:'JPY', SGD:'SGD', GBP:'GBP', HKD:'HKD', AUD:'AUD', CNY:'CNY', KRW:'KRW'}} ],
     def: function(){ return {fx:''}; } }
 };
 
 $('dlg').addEventListener('click', function(e){ if (e.target === $('dlg')) $('dlg').close(); });
-function listOf(ent){ return ent === 'savings' ? S.savings : ent === 'tx' ? S.tx : ent === 'salary' ? S.salary : ent === 'period' ? S.periods : S.prices; }
+function listOf(ent){ return ent === 'expense' ? S.expenses : ent === 'savings' ? S.savings : ent === 'tx' ? S.tx : ent === 'salary' ? S.salary : ent === 'period' ? S.periods : S.prices; }
 function keyOf(ent){ return ent === 'price' ? 'symbol' : 'id'; }
 
 function openForm(ent, key, preset){
@@ -406,6 +429,14 @@ function demandSub(d){
   var oldest = 0; a.forEach(function(x){ var n = daysAgo(x.updated); if (n !== null && n > oldest) oldest = n; });
   return a.length + ' tài khoản · ' + (oldest > 30 ? '<span class="warn">số dư cũ nhất cập nhật ' + oldest + ' ngày trước</span>' : (oldest <= 0 ? 'cập nhật hôm nay' : 'cập nhật cũ nhất ' + oldest + ' ngày trước'));
 }
+// Ô trên Tổng quan: tiền không kỳ hạn đủ chi trả bao nhiêu tháng chi tiêu (chỉ hiện khi đã nhập khoản chi)
+function runwayCard(){
+  var dl = S.savings.filter(function(s){ return s.type === 'DEMAND' && s.status !== 'closed'; });
+  var E = expSummary(dl);
+  if (!(E.monthly > 0)) return '';
+  return '<div class="card span2"><h3>Tiền không kỳ hạn đủ chi trả</h3><div class="big ' + E.tone + '">' + num(E.months, 1) + ' tháng chi tiêu</div>' +
+    '<div class="sub">Số dư ' + vnd(E.bal) + ' ÷ chi ước tính ' + vnd(E.monthly) + '/tháng (' + E.count + ' khoản). Mốc an toàn thường là ' + EXP_TARGET_MONTHS + ' tháng.</div></div>';
+}
 function rDash(){
   var d = S.dashboard, tot = d.totalAssets || 1;
   var colors = {DEMAND:'#60a5fa', TERM_END:'#2563eb', TERM_MONTHLY:'#1e3a8a', INV:'#16a34a'};
@@ -416,6 +447,7 @@ function rDash(){
     '<div class="card hero span2"><h3>Tổng tài sản</h3><div class="big">' + vnd(d.totalAssets) + '</div><div class="sub">Tiết kiệm + đầu tư (giá trị hiện tại)</div></div>' +
     card('Tiền không kỳ hạn', vnd(d.demandBalance), demandSub(d)) +
     card('Tiết kiệm có kỳ hạn', vnd(d.termValue), 'Gốc ' + vnd(d.termPrincipal) + ' · lãi tạm tính ' + vnd(d.termValue - d.termPrincipal)) +
+    runwayCard() +
     '<div class="card span2"><h3>Đầu tư</h3><div class="invrow"><div><div class="big">' + vnd(d.investValue) + '</div><div class="sub">Vốn ' + vnd(d.investCost) + '</div></div>' +
     '<div class="invstats"><div><div class="sub">Lãi/lỗ chưa chốt</div><div class="mid ' + cls(d.investUnrealized) + '">' + (d.investUnrealized >= 0 ? '+' : '') + vnd(d.investUnrealized) + ' <span class="sub">(' + (invPct >= 0 ? '+' : '') + pct(invPct) + ')</span></div></div>' +
     '<div><div class="sub">Lãi/lỗ đã chốt</div><div class="mid ' + cls(d.investRealized) + '">' + vnd(d.investRealized) + '</div></div></div></div></div>' +
@@ -575,7 +607,39 @@ function drawDemand(){
         '<div style="margin-top:10px"><button class="btn" data-act="bal" data-key="' + esc(s.id) + '">Cập nhật số dư</button> ' + acts('savings', s.id) + '</div></div>';
     }).join('') + '</div>';
   }
+  h += drawExpenses(list);
   box.innerHTML = h;
+}
+// Chi tiêu ước tính hàng tháng, đối chiếu với tổng số dư tiền không kỳ hạn
+var EXP_TARGET_MONTHS = 6;
+function expSummary(demandList){
+  var act = (S.expenses || []).filter(function(x){ return x.status !== 'paused'; });
+  var monthly = act.reduce(function(a, x){ return a + (Number(x.amount) || 0); }, 0);
+  var bal = demandList.reduce(function(a, s){ return a + (Number(s.principal) || 0); }, 0);
+  var months = monthly > 0 ? bal / monthly : null;
+  return {count: act.length, monthly: monthly, bal: bal, months: months,
+    tone: months === null ? '' : months >= EXP_TARGET_MONTHS ? 'pos' : months >= 3 ? 'warn' : 'neg'};
+}
+function drawExpenses(demandList){
+  var ex = S.expenses || [];
+  var E = expSummary(demandList), act = {length: E.count}, monthly = E.monthly, bal = E.bal;
+  var h = '<div class="row" style="margin-top:20px"><h2>Chi tiêu ước tính hàng tháng</h2><button class="btn ghost" data-act="add" data-ent="expense">+ Thêm khoản chi</button></div>';
+  if (!ex.length){
+    return h + '<div class="empty" style="margin-bottom:16px">Chưa có khoản chi nào. Thêm các khoản phải chi mỗi tháng (điện nước, chi phí cho con...) để xem tiền không kỳ hạn đủ trang trải bao lâu.</div>';
+  }
+  var months = E.months, tone = E.tone;
+  var diff = bal - monthly * EXP_TARGET_MONTHS;
+  h += '<div class="grid">' +
+    '<div class="card"><h3>Tổng chi mỗi tháng</h3><div class="big">' + vnd(monthly) + '</div><div class="sub">' + act.length + ' khoản đang tính</div></div>' +
+    '<div class="card"><h3>Tiền không kỳ hạn đủ chi trả</h3><div class="big ' + tone + '">' + (months === null ? '—' : num(months, 1) + ' tháng') + '</div><div class="sub">Số dư ' + vnd(bal) + ' ÷ ' + vnd(monthly) + '/tháng</div></div>' +
+    '<div class="card"><h3>So với quỹ ' + EXP_TARGET_MONTHS + ' tháng chi tiêu</h3><div class="big ' + (diff >= 0 ? 'pos' : 'neg') + '">' + (diff >= 0 ? '+' : '-') + vnd(Math.abs(diff)) + '</div><div class="sub">' + (diff >= 0 ? 'Dư so với mức cần có ' + vnd(monthly * EXP_TARGET_MONTHS) : 'Còn thiếu so với mức cần có ' + vnd(monthly * EXP_TARGET_MONTHS)) + '</div></div></div>';
+  h += '<div class="scroll" style="margin-top:12px"><table><thead><tr><th>Khoản chi</th><th class="n">Mỗi tháng</th><th class="n">Tỷ trọng</th><th>Ghi chú</th><th></th></tr></thead><tbody>' +
+    ex.map(function(x){
+      var paused = x.status === 'paused', a = Number(x.amount) || 0;
+      return '<tr' + (paused ? ' style="opacity:.55"' : '') + '><td><b>' + esc(x.name) + '</b>' + (paused ? ' <span class="badge o">Tạm không tính</span>' : '') + '</td><td class="n">' + vnd(a) + '</td><td class="n">' + (!paused && monthly > 0 ? num(a / monthly * 100, 0) + '%' : '—') + '</td><td>' + esc(x.note || '') + '</td><td>' + acts('expense', x.id) + '</td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div class="sub" style="margin:6px 0 16px">Số tháng chi trả = tổng số dư tiền không kỳ hạn ÷ tổng chi hàng tháng. Quỹ dự phòng thường nên đủ 3-6 tháng chi tiêu; màu xanh từ ' + EXP_TARGET_MONTHS + ' tháng, vàng từ 3 tháng, đỏ dưới 3 tháng.</div>';
+  return h;
 }
 function openBalance(id){
   var s = S.savings.filter(function(x){ return String(x.id) === String(id); })[0];
@@ -646,6 +710,30 @@ function rSav(){
   drawSavTable();
 }
 
+// Ô tỷ giá: mỗi ngoại tệ đang nắm giữ một dòng, ưu tiên tỷ giá tự động từ Google Finance
+function fxCard(P){
+  var by = {};
+  P.positions.forEach(function(p){
+    if (!p.currency || !p.fxRate) return;
+    var o = by[p.currency];
+    if (!o || (p.fxSource === 'auto' && o.src !== 'auto')) by[p.currency] = {rate: p.fxRate, src: p.fxSource, upd: p.fxUpdated};
+  });
+  var ks = Object.keys(by);
+  if (!ks.length) return '';
+  var body = '', stale = false, upd = '';
+  ks.forEach(function(c){
+    var o = by[c];
+    body += '<div class="big"' + (ks.length > 1 ? ' style="font-size:17px"' : '') + '>1 ' + esc(c) + ' = ' + num(o.rate, 0) + ' ₫' + (o.src === 'auto' ? ' <span class="badge g" title="Tỷ giá tự động từ Google Finance">⚡</span>' : ' <span class="badge o" title="Chưa lấy tỷ giá tự động, đang dùng tỷ giá của lần giao dịch gần nhất">*</span>') + '</div>';
+    if (o.src !== 'auto') stale = true; else if (o.upd && o.upd > upd) upd = o.upd;
+  });
+  return '<div class="card"><h3>Tỷ giá hiện tại</h3>' + body + '<div class="sub">' + (stale ? '* Chưa có tỷ giá tự động, bấm "⚡ Lấy giá tự động". Đang dùng tỷ giá lúc mua.' : 'Google Finance' + (upd ? ', cập nhật ' + esc(upd) : '')) + '</div></div>';
+}
+function curMoney(v, c){ var d = (c === 'JPY' || c === 'KRW') ? 0 : 2; return num(v, d) + ' ' + esc(c); }
+// Ô tiền của vị thế: ngoại tệ là số chính, ₫ quy đổi ghi nhỏ bên dưới
+function posMoney(p, nat, vndVal){
+  if (p.currency && nat != null) return curMoney(nat, p.currency) + '<div class="sub">≈ ' + vnd(vndVal) + '</div>';
+  return vnd(vndVal);
+}
 function txRate(x){ var c = String(x.currency || '').toUpperCase(); return (c && c !== 'VND') ? (Number(x.fxRate) || 1) : 1; }
 // Số tiền của giao dịch: ngoại tệ hiện kèm quy đổi sang ₫
 function txMoney(x, v){
@@ -655,7 +743,7 @@ function txMoney(x, v){
 }
 function rInv(){
   var P = S.portfolio, t = P.totals;
-  var h = '<div class="grid">' + card('Giá trị danh mục', vnd(t.value), 'Vốn ' + vnd(t.cost)) +
+  var h = '<div class="grid">' + fxCard(P) + card('Giá trị danh mục', vnd(t.value), 'Vốn ' + vnd(t.cost)) +
     card('Lãi/lỗ chưa chốt', '<span class="' + cls(t.unrealized) + '">' + vnd(t.unrealized) + '</span>', pct(t.unrealizedPct)) +
     card('Lãi/lỗ đã chốt', '<span class="' + cls(t.realized) + '">' + vnd(t.realized) + '</span>', 'Sau phí và thuế bán') + '</div>';
   h += '<div class="row"><h2>Danh mục đang nắm giữ</h2><span><button class="btn ghost" data-act="refresh">⚡ Lấy giá tự động</button> <button class="btn ghost" data-act="add" data-ent="price">Cập nhật giá</button> <button class="btn" data-act="add" data-ent="tx">+ Giao dịch</button></span></div>';
@@ -664,7 +752,7 @@ function rInv(){
     h += '<div class="scroll"><table><thead><tr><th>Mã</th><th>Loại</th><th class="n">SL</th><th class="n">Giá vốn BQ</th><th class="n">Giá hiện tại</th><th class="n">Giá trị</th><th class="n">Lãi/lỗ</th><th class="n">%</th><th></th></tr></thead><tbody>';
     P.positions.forEach(function(p){
       var pr = S.prices.filter(function(x){ return x.symbol === p.symbol; })[0];
-      h += '<tr><td><b>' + esc(p.symbol) + '</b></td><td>' + esc(ASSET_LABEL[p.assetType] || p.assetType) + '</td><td class="n">' + num(p.qty, 4) + '</td><td class="n">' + vnd(p.avgCost) + '</td><td class="n">' + vnd(p.price) + (p.priceSource === 'lastTrade' ? ' <span class="badge o" title="Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất">*</span>' : (p.priceSource === 'auto' ? ' <span class="badge g" title="Giá tự động từ Google Finance' + (p.priceUpdated ? ', cập nhật ' + esc(p.priceUpdated) : '') + '">⚡</span>' : '')) + '</td><td class="n">' + vnd(p.value) + '</td><td class="n ' + cls(p.unrealized) + '">' + vnd(p.unrealized) + '</td><td class="n ' + cls(p.unrealizedPct) + '">' + pct(p.unrealizedPct) + '</td><td>' + (pr ? '<button class="lnk" data-act="edit" data-ent="price" data-key="' + esc(p.symbol) + '">Sửa giá</button><button class="lnk del" data-act="del" data-ent="price" data-key="' + esc(p.symbol) + '">Xóa giá</button>' : '<button class="lnk" data-act="autoprice" data-key="' + esc(p.symbol) + '">Giá tự động</button>') + '</td></tr>';
+      h += '<tr><td><b>' + esc(p.symbol) + '</b>' + (p.mixedCurrency ? ' <span class="badge o" title="Mã này có giao dịch bằng nhiều loại tiền nên giá vốn và lãi/lỗ chỉ hiển thị bằng ₫">nhiều loại tiền</span>' : '') + '</td><td>' + esc(ASSET_LABEL[p.assetType] || p.assetType) + '</td><td class="n">' + num(p.qty, 4) + '</td><td class="n">' + posMoney(p, p.avgCostN, p.avgCost) + '</td><td class="n">' + posMoney(p, p.priceN, p.price) + (p.priceSource === 'lastTrade' ? ' <span class="badge o" title="Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất">*</span>' : (p.priceSource === 'auto' ? ' <span class="badge g" title="Giá tự động từ Google Finance' + (p.priceUpdated ? ', cập nhật ' + esc(p.priceUpdated) : '') + '">⚡</span>' : '')) + '</td><td class="n">' + posMoney(p, p.priceN != null ? p.valueN : null, p.value) + '</td><td class="n ' + cls(p.unrealized) + '">' + posMoney(p, p.unrealizedN, p.unrealized) + '</td><td class="n ' + cls(p.unrealizedPct) + '">' + pct(p.unrealizedPct) + '</td><td>' + (pr ? '<button class="lnk" data-act="edit" data-ent="price" data-key="' + esc(p.symbol) + '">Sửa giá</button><button class="lnk del" data-act="del" data-ent="price" data-key="' + esc(p.symbol) + '">Xóa giá</button>' : '<button class="lnk" data-act="autoprice" data-key="' + esc(p.symbol) + '">Giá tự động</button>') + '</td></tr>';
     });
     h += '</tbody></table></div><div class="sub" style="margin:6px 0 0">* Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất. ⚡ = giá tự động từ Google Finance (chậm khoảng 15-20 phút). Giá vốn bình quân gia quyền đã gồm phí mua.</div>';
   }
@@ -702,7 +790,12 @@ function breakdown(c){
 function salaryDetail(id){
   var s = S.salary.filter(function(x){ return String(x.id) === String(id); })[0];
   if (!s) { bad('Không tìm thấy bản ghi lương này, hãy tải lại trang'); return; }
-  $('dlgBody').innerHTML = '<h2>Chi tiết lương tháng ' + esc(s.month) + '</h2>' + breakdown(s.calc) + '<div class="acts"><button class="btn" id="dc">Đóng</button></div>';
+  var comp = '<div class="kv"><span>Lương cơ bản</span><span>' + vnd(Number(s.base) || 0) + '</span></div>' +
+    '<div class="kv"><span>Phụ cấp</span><span>' + vnd(Number(s.allowance) || 0) + '</span></div>' +
+    '<div class="kv"><span>Thưởng</span><b' + ((Number(s.bonus) || 0) > 0 ? ' class="pos"' : '') + '>' + vnd(Number(s.bonus) || 0) + '</b></div>' +
+    ((Number(s.exempt) || 0) ? '<div class="kv"><span>Thu nhập miễn thuế</span><span>' + vnd(Number(s.exempt)) + '</span></div>' : '') +
+    '<hr style="border:0;border-top:1px solid var(--line);margin:8px 0">';
+  $('dlgBody').innerHTML = '<h2>Chi tiết lương tháng ' + esc(s.month) + '</h2>' + comp + breakdown(s.calc) + '<div class="acts"><button class="btn" id="dc">Đóng</button></div>';
   $('dc').onclick = function(){ $('dlg').close(); };
   $('dlg').showModal();
 }
@@ -753,8 +846,138 @@ function drawSalTable(){
   h += '</tbody></table></div><div class="sub" style="margin-top:8px">Năm ' + esc(SALV.year) + ': ' + rows.length + ' tháng · gross ' + vnd(tg) + ' · bảo hiểm ' + vnd(ti) + ' · thuế TNCN ' + vnd(tt) + ' · net ' + vnd(tn) + '</div>';
   box.innerHTML = h;
 }
+
+// ---- Biểu đồ lương: theo dõi các lần tăng lương gross (không tính thưởng) ----
+function salaryRaises(rows){
+  // rows: tăng dần theo tháng, mỗi dòng {month, fixed}
+  var out = [];
+  for (var i = 1; i < rows.length; i++){
+    var d = rows[i].fixed - rows[i - 1].fixed;
+    if (d > 0.5) out.push({month: rows[i].month, from: rows[i - 1].fixed, to: rows[i].fixed, diff: d, pct: rows[i - 1].fixed > 0 ? d / rows[i - 1].fixed : null, i: i});
+  }
+  return out;
+}
+function salChartRows(){
+  var cur = S.today.slice(0, 7);
+  return S.salary.filter(function(x){ return String(x.month) <= cur && x.calc; }).map(function(x){
+    var g = Number(x.calc.gross) || 0, b = Number(x.bonus) || 0;
+    return {month: String(x.month), gross: g, bonus: b, fixed: g - b};
+  }).sort(function(a, b){ return a.month < b.month ? -1 : a.month > b.month ? 1 : 0; });
+}
+function niceMax(v){
+  if (!(v > 0)) return 1;
+  var e = Math.pow(10, Math.floor(Math.log(v) / Math.LN10)), f = v / e;
+  var n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+  return n * e;
+}
+function trFmt(v){ var m = v / 1e6; return (Math.round(m * 10) / 10).toString().replace('.', ',') + ' tr'; }
+function drawSalChart(){
+  var box = $('salChart'); if (!box) return;
+  var rows = salChartRows();
+  if (rows.length < 1){ box.innerHTML = '<div class="empty">Chưa có dữ liệu lương để vẽ biểu đồ.</div>'; return; }
+  var raises = salaryRaises(rows);
+  var first = rows[0], last = rows[rows.length - 1];
+  var since = first.fixed > 0 ? (last.fixed - first.fixed) / first.fixed : null;
+  var lastR = raises.length ? raises[raises.length - 1] : null;
+
+  var h = '<div class="sc-stats">' +
+    '<div><div class="sub">Gross cố định hiện tại</div><div class="v">' + vnd(last.fixed) + '</div></div>' +
+    '<div><div class="sub">Tăng từ ' + esc(first.month) + '</div><div class="v ' + (since > 0 ? 'pos' : '') + '">' + (since == null ? '—' : (since > 0 ? '+' : '') + (since * 100).toFixed(1).replace('.', ',') + '%') + '</div></div>' +
+    '<div><div class="sub">Số lần tăng lương</div><div class="v">' + raises.length + '</div></div>' +
+    '<div><div class="sub">Lần tăng gần nhất</div><div class="v">' + (lastR ? esc(lastR.month) : '—') + '</div></div></div>';
+
+  // hình học
+  var W = 760, H = 280, L = 44, R = 12, T = 22, B = 30, pw = W - L - R, ph = H - T - B;
+  var maxV = 0; rows.forEach(function(r){ if (r.gross > maxV) maxV = r.gross; });
+  var top = niceMax(maxV * 1.08), n = rows.length, slot = pw / n, bw = Math.min(24, slot * 0.62);
+  function X(i){ return L + slot * (i + 0.5); }
+  function Y(v){ return T + ph - (v / top) * ph; }
+  var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Biểu đồ lương gross theo tháng, đánh dấu các lần tăng lương">';
+  var ticks = 4;
+  for (var t = 0; t <= ticks; t++){
+    var v = top * t / ticks, y = Y(v);
+    svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" stroke="#e5e7eb" stroke-width="1"/>' +
+      '<text x="' + (L - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="#6b7280">' + trFmt(v) + '</text>';
+  }
+  // cột: tổng gross (có thưởng) - nhạt
+  rows.forEach(function(r, i){
+    var y = Y(r.gross), hh = T + ph - y, x = X(i) - bw / 2, rad = Math.min(4, bw / 2, hh);
+    if (hh <= 0) return;
+    svg += '<path d="M' + x + ' ' + (T + ph) + 'V' + (y + rad) + 'Q' + x + ' ' + y + ' ' + (x + rad) + ' ' + y + 'H' + (x + bw - rad) + 'Q' + (x + bw) + ' ' + y + ' ' + (x + bw) + ' ' + (y + rad) + 'V' + (T + ph) + 'Z" fill="#bfd3f5"/>';
+  });
+  // đường bậc thang: gross cố định
+  var d = '';
+  rows.forEach(function(r, i){
+    var x = X(i), y = Y(r.fixed);
+    d += (i === 0 ? 'M' + x + ' ' + y : 'H' + x + 'V' + y);
+  });
+  svg += '<path d="' + d + '" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  // nhãn trục X thưa
+  var every = Math.max(1, Math.ceil(n / 12));
+  rows.forEach(function(r, i){
+    if (i % every === 0 || i === n - 1) {
+      if (i !== n - 1 && n - 1 - i < every * 0.6) return;
+      svg += '<text x="' + X(i) + '" y="' + (H - 10) + '" text-anchor="middle" font-size="11" fill="#6b7280">' + esc(r.month.slice(2)) + '</text>';
+    }
+  });
+  // mốc tăng lương
+  raises.forEach(function(rz){
+    var x = X(rz.i), y = Y(rz.to);
+    svg += '<circle cx="' + x + '" cy="' + y + '" r="5" fill="#16a34a" stroke="#fff" stroke-width="2"/>' +
+      '<text x="' + x + '" y="' + Math.max(12, y - 11) + '" text-anchor="middle" font-size="11" font-weight="700" fill="#1f2937">' + (rz.pct == null ? '' : '+' + (rz.pct * 100).toFixed(0) + '%') + '</text>';
+  });
+  // vùng hover theo từng tháng (rộng ≥ 24px)
+  rows.forEach(function(r, i){
+    svg += '<rect class="sc-hit" data-i="' + i + '" x="' + (X(i) - Math.max(12, slot / 2)) + '" y="' + T + '" width="' + Math.max(24, slot) + '" height="' + ph + '" tabindex="0"/>';
+  });
+  svg += '</svg>';
+
+  h += '<div class="legend" style="margin-bottom:6px"><span><i class="dot" style="background:#bfd3f5"></i> Tổng gross tháng (gồm thưởng)</span> ' +
+    '<span><i class="dot" style="background:#2563eb"></i> Gross cố định (không thưởng)</span> ' +
+    '<span><i class="dot" style="background:#16a34a"></i> Lần tăng lương</span></div>' +
+    '<div class="sc-wrap">' + svg + '<div class="sc-tip" id="scTip"></div></div>';
+
+  // bảng các lần tăng
+  h += '<h3 style="margin:16px 0 8px">Các lần tăng lương</h3>';
+  if (!raises.length) h += '<div class="sub">Chưa có lần tăng nào trong dữ liệu (so sánh gross không gồm thưởng giữa các tháng liên tiếp).</div>';
+  else {
+    h += '<div class="scroll"><table><thead><tr><th>Từ tháng</th><th class="n">Trước</th><th class="n">Sau</th><th class="n">Tăng thêm</th><th class="n">%</th></tr></thead><tbody>';
+    raises.slice().reverse().forEach(function(rz){
+      h += '<tr><td><b>' + esc(rz.month) + '</b></td><td class="n">' + vnd(rz.from) + '</td><td class="n">' + vnd(rz.to) + '</td><td class="n pos">+' + vnd(rz.diff) + '</td><td class="n pos">' + (rz.pct == null ? '—' : '+' + (rz.pct * 100).toFixed(1).replace('.', ',') + '%') + '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+  h += '<div class="sub" style="margin-top:8px">Lần tăng = gross không gồm thưởng của tháng cao hơn tháng liền trước, nên tháng có thưởng không bị tính nhầm là tăng lương. Chỉ hiển thị đến tháng hiện tại.</div>';
+  box.innerHTML = h;
+
+  var tip = $('scTip'), wrap = box.querySelector('.sc-wrap');
+  function show(i, ev){
+    var r = rows[i], rz = raises.filter(function(x){ return x.i === i; })[0];
+    tip.textContent = '';
+    function line(txt, strong){ var e = document.createElement(strong ? 'b' : 'div'); e.textContent = txt; tip.appendChild(e); if (strong) tip.appendChild(document.createElement('br')); }
+    line(vnd(r.fixed), true);
+    line('Gross cố định · ' + r.month);
+    if (r.bonus) line('Thưởng ' + vnd(r.bonus) + ' → tổng ' + vnd(r.gross));
+    if (rz) line('Tăng ' + vnd(rz.diff) + (rz.pct == null ? '' : ' (+' + (rz.pct * 100).toFixed(1).replace('.', ',') + '%)'));
+    tip.style.display = 'block';
+    var wr = wrap.getBoundingClientRect(), tr = ev.target.getBoundingClientRect();
+    var cx = tr.left + tr.width / 2 - wr.left, tw = tip.offsetWidth;
+    tip.style.left = Math.max(0, Math.min(wr.width - tw, cx - tw / 2)) + 'px';
+    tip.style.top = Math.round(wr.height * 0.58) + 'px';
+  }
+  function hide(){ tip.style.display = 'none'; }
+  box.querySelectorAll('.sc-hit').forEach(function(el){
+    var i = Number(el.getAttribute('data-i'));
+    el.addEventListener('pointerenter', function(e){ show(i, e); });
+    el.addEventListener('pointermove', function(e){ show(i, e); });
+    el.addEventListener('focus', function(e){ show(i, e); });
+    el.addEventListener('pointerleave', hide);
+    el.addEventListener('blur', hide);
+  });
+}
 function rSal(){
   var h = '<div class="note">Tính thuế TNCN từ tiền lương theo biểu lũy tiến 5 bậc (5% / 10% / 20% / 30% / 35%) và mức giảm trừ gia cảnh áp dụng từ kỳ tính thuế 2026. Mọi tham số (giảm trừ, tỷ lệ BH, trần đóng, bậc thuế) chỉnh được ở tab Cài đặt. Ứng dụng chỉ mang tính tham khảo; số liệu quyết toán thực tế theo chứng từ của đơn vị chi trả.</div>';
+  h += '<div class="card" style="margin-bottom:20px"><h3 style="margin-top:0">Biểu đồ lương &amp; các lần tăng lương</h3><div id="salChart"></div></div>';
   h += '<div class="row"><h2>Lương theo tháng</h2><button class="btn" data-act="add" data-ent="salary">+ Thêm tháng</button></div><div id="salTbl"></div>';
   h += '<div class="grid" style="margin-top:20px"><div class="card"><h3>Máy tính nhanh</h3>' +
     '<label>Lương gross / tháng (₫)</label><input id="qg" type="number" placeholder="VD: 30000000">' +
@@ -764,6 +987,7 @@ function rSal(){
     '<div class="acts"><button class="btn ghost" id="qbn">Net → Gross</button><button class="btn" id="qbg">Gross → Net</button></div><div class="err" id="qe"></div></div>' +
     '<div class="card" id="qres"><h3>Kết quả</h3><div class="sub">Nhập số liệu và bấm tính.</div></div></div>';
   $('t-sal').innerHTML = h;
+  drawSalChart();
   drawSalTable();
   $('salTbl').onclick = function(e){
     var b = e.target.closest('[data-yr]'); if (!b || b.disabled) return;

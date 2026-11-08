@@ -45,7 +45,7 @@ Nút **✨ Phân tích ngay** ở tab Tổng quan gửi số liệu tổng hợp
 2. Trong Apps Script: **Cài đặt dự án** (biểu tượng bánh răng) → **Thuộc tính tập lệnh** → **Thêm thuộc tính tập lệnh**:
    - `AI_PROVIDER` = `gemini` (mặc định) hoặc `anthropic`
    - `GEMINI_API_KEY` hoặc `ANTHROPIC_API_KEY` = khóa của bạn
-   - `AI_MODEL` (tùy chọn) = tên model. Để trống thì dùng mặc định `gemini-flash-latest` hoặc `claude-haiku-5-5`. Nếu báo lỗi model, vào trang danh sách model của nhà cung cấp, lấy đúng tên model hiện hành rồi điền vào đây.
+   - `AI_MODEL` (tùy chọn) = tên model. Để trống thì dùng mặc định `gemini-3.5-flash-lite` hoặc `claude-haiku-5-5`. Nếu báo lỗi model, vào trang danh sách model của nhà cung cấp, lấy đúng tên model hiện hành rồi điền vào đây.
 3. Dán `appsscript.json` mới (đã có thêm quyền `script.external_request`), triển khai phiên bản mới và cấp quyền lại khi được hỏi.
 
 Quyền riêng tư: chỉ gửi số liệu tổng hợp (không có tên sổ, mã cổ phiếu, ghi chú); bấm "Dữ liệu đã gửi cho AI" dưới kết quả để xem chính xác những gì đã gửi. Với Gemini, gói miễn phí (chưa bật thanh toán) cho phép Google dùng dữ liệu gửi lên để cải thiện sản phẩm và người đánh giá có thể đọc; hãy đọc điều khoản hiện hành của nhà cung cấp trước khi gửi số liệu tài chính thật.

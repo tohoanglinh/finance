@@ -25,7 +25,8 @@ const SCHEMA = {
   price: {
     sheet: 'GiaHienTai',
     cols: [['symbol', 'Mã'], ['price', 'Giá hiện tại'], ['updated', 'Cập nhật'],
-           ['auto', 'Mã Google Finance (trống = nhập tay)'], ['fx', 'Tiền tệ gốc (trống = VND)']],
+           ['auto', 'Mã Google Finance (trống = nhập tay)'], ['fx', 'Tiền tệ gốc (trống = VND)'],
+           ['fxNow', 'Tỷ giá hiện tại sang VND (tự động)']],
     key: 'symbol',
     text: ['updated', 'auto', 'fx']
   },
@@ -35,6 +36,12 @@ const SCHEMA = {
            ['bonus', 'Thưởng'], ['exempt', 'Thu nhập miễn thuế'], ['dependents', 'Số người phụ thuộc'],
            ['otherDeduction', 'Giảm trừ khác'], ['insBase', 'Lương đóng BH (trống = lương HĐ)'], ['note', 'Ghi chú']],
     text: ['id', 'month']
+  },
+  // Chi tiêu ước tính hàng tháng (đối chiếu với số dư tiết kiệm không kỳ hạn)
+  expense: {
+    sheet: 'ChiTieu',
+    cols: [['id', 'ID'], ['name', 'Khoản chi'], ['amount', 'Số tiền / tháng'], ['status', 'Trạng thái (active/paused)'], ['note', 'Ghi chú']],
+    text: ['id']
   },
   // Giai đoạn áp dụng: từ tháng "from" đến hết tháng "to" (trống = không giới hạn), tham số "key" (trong CauHinh) đổi sang "value"
   // Cột "to" đặt cuối cùng để sheet GiaiDoan tạo từ phiên bản cũ tự được bổ sung cột mới
@@ -50,7 +57,8 @@ const SCHEMA = {
 const NUMERIC = {
   savings: ['principal', 'rate', 'termMonths'],
   tx: ['qty', 'price', 'fee', 'fxRate'],
-  price: ['price'],
+  price: ['price', 'fxNow'],
+  expense: ['amount'],
   salary: ['base', 'allowance', 'bonus', 'exempt', 'dependents', 'otherDeduction', 'insBase']
 };
 
@@ -62,7 +70,7 @@ const DEFAULT_PERIODS = [
 const TEXT_KEYS = ['taxBrackets', 'regionMin', 'sellTaxTypes'];
 
 // Tiền tố ID dễ đọc theo từng loại bản ghi: TK-001, DT-001, LG-001, AD-001
-const ID_PREFIX = { savings: 'TK', tx: 'DT', salary: 'LG', period: 'AD' };
+const ID_PREFIX = { savings: 'TK', tx: 'DT', salary: 'LG', period: 'AD', expense: 'CT' };
 
 const CONFIG_SHEET = 'CauHinh';
 // [key, value, mô tả]
@@ -86,7 +94,7 @@ const DEFAULT_CONFIG = [
 
 // ===================== ĐIỂM VÀO WEB APP =====================
 function doGet() {
-  setup_();
+  ensureSetup_(true);
   return HtmlService.createHtmlOutputFromFile('Index')
     .setTitle('Tài chính cá nhân')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
@@ -99,8 +107,7 @@ function onOpen() {
 }
 
 function api(action, p) {
-  try {
-    setup_();
+  const dispatch = function () {
     switch (action) {
       case 'bootstrap': return { ok: true, data: bootstrap_() };
       case 'save': return { ok: true, data: save_(p.entity, p.record) };
@@ -114,22 +121,54 @@ function api(action, p) {
       case 'grossFromNet': return { ok: true, data: grossFromNet_(p, cfgForMonth_(p.month)) };
       default: return { ok: false, error: 'Hành động không hợp lệ: ' + action };
     }
+  };
+  try {
+    ensureSetup_(false);
+    try {
+      return dispatch();
+    } catch (e) {
+      // Có thể một sheet vừa bị xóa/đổi tên khi cờ khởi tạo còn hiệu lực: khởi tạo lại rồi thử lại đúng một lần
+      if (/null|undefined/i.test(String(e && e.message)) && /Cannot read|reading|of null|of undefined/i.test(String(e && e.message))) {
+        ensureSetup_(true);
+        return dispatch();
+      }
+      throw e;
+    }
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
 }
 
 // ===================== SHEETS =====================
+var SS_CACHE_ = null;   // mỗi lần chạy chỉ mở bảng tính một lần
 function ss_() {
+  if (SS_CACHE_) return SS_CACHE_;
   let ss = null;
   try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) {}
-  if (ss) return ss;
+  if (ss) return (SS_CACHE_ = ss);
   const props = PropertiesService.getScriptProperties();
   const id = props.getProperty('SS_ID');
-  if (id) return SpreadsheetApp.openById(id);
+  if (id) return (SS_CACHE_ = SpreadsheetApp.openById(id));
   ss = SpreadsheetApp.create('Tài chính cá nhân - dữ liệu');
   props.setProperty('SS_ID', ss.getId());
-  return ss;
+  return (SS_CACHE_ = ss);
+}
+
+/**
+ * Kiểm tra/khởi tạo các sheet tốn nhiều lệnh gọi Google Sheets, nên chỉ làm khi mở trang hoặc khi cấu trúc dữ liệu đổi.
+ * Cờ nhớ trong 10 phút; chữ ký lấy từ cấu trúc nên bản mã mới (thêm cột/sheet) tự chạy lại.
+ */
+function schemaSig_() {
+  const s = JSON.stringify(SCHEMA) + JSON.stringify(DEFAULT_CONFIG);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return 'SETUP_' + h;
+}
+function ensureSetup_(force) {
+  const cache = CacheService.getScriptCache(), key = schemaSig_();
+  if (!force && cache.get(key)) return;
+  setup_();
+  cache.put(key, '1', 600);
 }
 
 function setup_() {
@@ -420,6 +459,7 @@ function refreshPricesRun_(onlySymbol) {
         if (idx > 0) {
           sh.getRange(idx, colOf('price')).setNumberFormat('0.########').setValue(vnd);
           sh.getRange(idx, colOf('updated')).setNumberFormat('@').setValue(today);
+          sh.getRange(idx, colOf('fxNow')).setNumberFormat('0.########').setValue(fx === 1 ? '' : fx);
           updated++;
           results.push({ symbol: r.symbol, ok: true, price: vnd });
         }
@@ -435,6 +475,12 @@ function refreshPricesRun_(onlySymbol) {
 
 function validate_(ent, r) {
   const num = function (v) { return v !== '' && v !== null && v !== undefined && !isNaN(Number(v)); };
+  if (ent === 'expense') {
+    if (!String(r.name || '').trim()) throw new Error('Nhập tên khoản chi');
+    if (!num(r.amount) || Number(r.amount) <= 0) throw new Error('Số tiền chi mỗi tháng phải lớn hơn 0');
+    if (r.status !== 'active' && r.status !== 'paused') throw new Error('Trạng thái không hợp lệ');
+    return;
+  }
   if (ent === 'savings') {
     if (!r.name) throw new Error('Nhập tên sổ/ngân hàng');
     const demand = r.type === 'DEMAND';   // không kỳ hạn: "gốc" là số dư (được bằng 0), lãi suất tùy chọn
@@ -807,32 +853,39 @@ function calcPortfolio_(txs, prices, cfg) {
   sorted.forEach(function (t) {
     const sym = String(t.symbol || '').toUpperCase().trim();
     if (!sym) return;
-    const p = pos[sym] || (pos[sym] = { symbol: sym, assetType: t.assetType || 'STOCK', qty: 0, cost: 0, realized: 0, lastPrice: 0, fees: 0 });
+    const p = pos[sym] || (pos[sym] = { symbol: sym, assetType: t.assetType || 'STOCK', qty: 0, cost: 0, costN: 0, realized: 0, lastPrice: 0, lastPriceN: 0, lastRate: 1, curs: {}, fees: 0 });
     // Giao dịch bằng ngoại tệ: quy đổi giá và phí sang VND theo tỷ giá nhập tại thời điểm giao dịch
     const cur = String(t.currency || '').toUpperCase().trim();
     const rate = (cur && cur !== 'VND') ? (Number(t.fxRate) || 1) : 1;
     const q = Number(t.qty) || 0, pr = (Number(t.price) || 0) * rate, fee = (Number(t.fee) || 0) * rate;
     p.assetType = t.assetType || p.assetType;
     p.lastPrice = pr;
+    const curKey = cur || 'VND';
+    p.curs[curKey] = true; p.cur = curKey; p.lastRate = rate; p.lastPriceN = Number(t.price) || 0;
+    const prN = Number(t.price) || 0, feeN = Number(t.fee) || 0;
     if (t.side === 'SELL') {
       const sq = Math.min(q, p.qty);
       const avg = p.qty > 0 ? p.cost / p.qty : 0;
       const tax = taxed.indexOf(String(p.assetType).toUpperCase()) >= 0 ? sq * pr * sellTax : 0;
       p.realized += sq * pr - fee - tax - avg * sq;
       p.fees += fee + tax;
+      const avgN = p.qty > 0 ? p.costN / p.qty : 0;
+      p.costN -= avgN * sq;
       p.cost -= avg * sq;
       p.qty -= sq;
     } else {
-      p.qty += q; p.cost += q * pr + fee; p.fees += fee;
+      p.qty += q; p.cost += q * pr + fee; p.costN += q * prN + feeN; p.fees += fee;
     }
   });
-  const pmap = {}, amap = {}, umap = {};
+  const pmap = {}, amap = {}, umap = {}, fmap = {}, nmap = {};
   (prices || []).forEach(function (x) {
     const k = String(x.symbol).toUpperCase();
     if (x.price === '' || x.price === null || x.price === undefined || isNaN(Number(x.price))) return;   // chưa có giá: dùng giá giao dịch gần nhất
     pmap[k] = Number(x.price);
     amap[k] = String(x.auto || '').trim() !== '';
     umap[k] = String(x.updated || '');
+    fmap[k] = String(x.fx || '').toUpperCase().trim();
+    nmap[k] = Number(x.fxNow) > 0 ? Number(x.fxNow) : 0;
   });
   const positions = [];
   let tCost = 0, tValue = 0, tRealized = 0;
@@ -849,6 +902,24 @@ function calcPortfolio_(txs, prices, cfg) {
         unrealized: value - p.cost, unrealizedPct: p.cost > 0 ? (value - p.cost) / p.cost * 100 : 0,
         realized: p.realized
       });
+      // Hiển thị theo tiền tệ gốc (USD...) nếu cổ phiếu được giao dịch/định giá bằng ngoại tệ
+      const pc = positions[positions.length - 1];
+      const curOut = (fmap[sym] && fmap[sym] !== 'VND') ? fmap[sym] : (p.cur && p.cur !== 'VND' ? p.cur : '');
+      if (curOut) {
+        // Tỷ giá dự phòng (lần giao dịch gần nhất) chỉ dùng được khi giao dịch đó cùng loại tiền với tiền hiển thị
+        const rate = (hasPrice && nmap[sym] > 0) ? nmap[sym] : (p.cur === curOut && p.lastRate > 1 ? p.lastRate : 0);
+        const sameCur = Object.keys(p.curs).length === 1 && p.curs[curOut];
+        pc.mixedCurrency = !sameCur;
+        pc.currency = curOut;
+        if (rate > 0) {
+          pc.fxRate = rate;
+          pc.fxSource = (hasPrice && nmap[sym] > 0) ? 'auto' : 'trade';
+          pc.fxUpdated = (hasPrice && nmap[sym] > 0) ? umap[sym] : '';
+          pc.priceN = hasPrice ? price / rate : (p.cur === curOut ? p.lastPriceN : price / rate);
+          pc.valueN = p.qty * pc.priceN;
+          if (sameCur) { pc.avgCostN = p.costN / p.qty; pc.costN = p.costN; pc.unrealizedN = pc.valueN - p.costN; }
+        }
+      }
       tCost += p.cost; tValue += value;
     }
   });
@@ -962,6 +1033,7 @@ function bootstrap_() {
   return { today: today, aiReady: aiReady_(), config: cfg, periods: periods,
            configInfo: DEFAULT_CONFIG.map(function (d) { return { key: d[0], desc: d[2] }; }),
            savings: savings, tx: tx, prices: prices, portfolio: portfolio, salary: salary,
+           expenses: readAll_('expense'),
            dashboard: buildDashboard_(savings, portfolio, salary, today, cfg) };
 }
 
@@ -1045,12 +1117,12 @@ function buildDashboard_(savings, portfolio, salary, today, cfg) {
 //   AI_PROVIDER    = gemini (mặc định) hoặc anthropic
 //   GEMINI_API_KEY / ANTHROPIC_API_KEY = khóa tương ứng
 //   AI_MODEL       = (tùy chọn) tên model, để trống thì dùng mặc định bên dưới
-const AI_DEFAULT_MODEL = { gemini: 'gemini-flash-latest', anthropic: 'claude-haiku-5-5' };
+const AI_DEFAULT_MODEL = { gemini: 'gemini-3.5-flash-lite', anthropic: 'claude-haiku-5-5' };
 
 const AI_SYSTEM = [
   'Bạn là chuyên gia phân tích tài chính cá nhân, trả lời bằng tiếng Việt, giọng thân thiện và thẳng thắn.',
   'Bạn được cung cấp số liệu TỔNG HỢP từ một ứng dụng quản lý tài chính cá nhân (VND). Chỉ dùng số liệu được cung cấp, tuyệt đối không bịa thêm số.',
-  'Ứng dụng KHÔNG có dữ liệu về chi tiêu hằng tháng, nợ, bảo hiểm nhân thọ, tài sản khác (nhà, xe...). Nếu cần những thứ đó để kết luận thì nói rõ là chưa đủ dữ liệu, đừng đoán.',
+  'Chi tiêu hằng tháng chỉ là số ước tính do người dùng tự nhập (nếu có trong số liệu). Ứng dụng KHÔNG có dữ liệu về nợ, bảo hiểm nhân thọ, tài sản khác (nhà, xe...). Nếu cần những thứ đó để kết luận thì nói rõ là chưa đủ dữ liệu, đừng đoán.',
   'Trình bày bằng Markdown đơn giản với đúng 4 phần (tiêu đề ##): "Đánh giá chung" (1 câu kết luận: Tốt / Ổn / Cần chú ý, kèm 2-3 câu lý do), "Điểm mạnh", "Rủi ro và điều cần lưu ý", "Gợi ý hành động" (3-5 gạch đầu dòng, cụ thể, có con số khi có thể).',
   'Các góc nhìn nên cân nhắc nếu có dữ liệu: mức tiền khả dụng so với thu nhập, mức độ tập trung (một sổ tiết kiệm hay một mã đầu tư chiếm tỷ trọng lớn), tỷ trọng đầu tư rủi ro, lãi suất bình quân, các khoản sắp đáo hạn cần quyết định tái tục, độ ổn định thu nhập.',
   'Không khuyên mua hoặc bán một mã cụ thể. Không cần lời chào hay lời rào đón dài. Tối đa khoảng 350 từ.'
@@ -1088,6 +1160,8 @@ function aiSummary_() {
   const series = (d.salarySeries || []).slice(-6);
   const avgNet = series.length ? series.reduce(function (a, s) { return a + s.net; }, 0) / series.length : 0;
   const ls = d.latestSalary;
+  const spend = (b.expenses || []).filter(function (x) { return x.status !== 'paused'; })
+    .reduce(function (a, x) { return a + (Number(x.amount) || 0); }, 0);
   return {
     ngay: b.today,
     tong_tai_san: round(total),
@@ -1103,9 +1177,11 @@ function aiSummary_() {
               lai_lo_chua_chot_pct: d.investCost > 0 ? Math.round(d.investUnrealized / d.investCost * 1000) / 10 : 0,
               lai_lo_da_chot: round(d.investRealized), so_ma_dang_giu: pos.length,
               ma_lon_nhat_pct_danh_muc: pctOf(maxPos, invTotal) },
+    chi_tieu_hang_thang_uoc_tinh: spend > 0 ? { tong: round(spend),
+      tien_khong_ky_han_du_cho_bao_nhieu_thang_chi_tieu: Math.round(d.demandBalance / spend * 10) / 10 } : null,
     luong: ls ? { thang_gan_nhat: ls.month, net_gan_nhat: round(ls.net), gross_gan_nhat: round(ls.gross), thue_gan_nhat: round(ls.tax),
                   net_trung_binh_6_thang: round(avgNet), luy_ke_nam_net: round(d.ytd.net), luy_ke_nam_thue: round(d.ytd.tax) } : null,
-    khong_co_trong_du_lieu: ['chi tieu hang thang', 'no / khoan vay', 'bao hiem nhan tho', 'tai san khac (nha, xe...)']
+    khong_co_trong_du_lieu: ['no / khoan vay', 'bao hiem nhan tho', 'tai san khac (nha, xe...)']
   };
 }
 
@@ -1115,7 +1191,7 @@ function aiCall_(cfg, system, user) {
     url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(cfg.model) + ':generateContent';
     headers = { 'x-goog-api-key': cfg.key };
     payload = { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: user }] }],
-                generationConfig: { maxOutputTokens: 4000, temperature: 0.4 } };
+                generationConfig: { maxOutputTokens: 4000 } };   // không đặt temperature: các model Gemini 3.x từ chối tham số này
   } else {
     url = 'https://api.anthropic.com/v1/messages';
     headers = { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' };
