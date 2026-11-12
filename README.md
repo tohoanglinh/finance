@@ -25,6 +25,7 @@ Toàn bộ dữ liệu nằm trong sheet của bạn: `TietKiem`, `GiaoDichDauTu
 - Có kỳ hạn, lãi cuối kỳ: lãi = gốc × lãi suất × số tháng / 12.
 - Có kỳ hạn, lãi hàng tháng: mỗi tháng = gốc × lãi suất / 12.
 - Đầu tư: giá vốn bình quân gia quyền (gồm phí mua); thuế bán 0,1% tự tính theo loại tài sản (sửa ở CauHinh).
+- Mã loại trừ: tham số `excludeSymbols` (mặc định `NXPI`, cổ phiếu RSU) liệt kê các mã không cộng vào giá trị danh mục, lãi/lỗ và tổng tài sản; mã vẫn hiện trong bảng danh mục và vẫn tính giá vốn, lãi/lỗ riêng. Sửa trong sheet `CauHinh` hoặc thêm giai đoạn.
 - Lương: BH người lao động 10,5% (có trần), giảm trừ 15,5tr + 6,2tr/người phụ thuộc, biểu thuế tháng 5 bậc 5/10/20/30/35%.
 
 ## Giai đoạn áp dụng

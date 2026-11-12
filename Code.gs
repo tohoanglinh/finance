@@ -75,7 +75,7 @@ const DEFAULT_PERIODS = [
   ['2026-07', 'capSocial', '50600000', 'Trần BHXH/BHYT từ 07/2026 (20 x mức tham chiếu 2,53 triệu)']
 ];
 // Các tham số dạng chữ (không phải số)
-const TEXT_KEYS = ['taxBrackets', 'regionMin', 'sellTaxTypes'];
+const TEXT_KEYS = ['taxBrackets', 'regionMin', 'sellTaxTypes', 'excludeSymbols'];
 
 // Tiền tố ID dễ đọc theo từng loại bản ghi: TK-001, DT-001, LG-001, AD-001
 const ID_PREFIX = { savings: 'TK', tx: 'DT', salary: 'LG', period: 'AD', expense: 'CT', spend: 'TC' };
@@ -97,6 +97,7 @@ const DEFAULT_CONFIG = [
     'Biểu thuế lũy tiến THÁNG: giới hạn trên:thuế suất %. Phân tách bằng dấu phẩy'],
   ['sellTaxRate', '0.1', 'Thuế bán chứng khoán (% trên giá trị bán)'],
   ['sellTaxTypes', 'STOCK,ETF,FUND', 'Các loại tài sản chịu thuế bán (STOCK, ETF, FUND, OTHER)'],
+  ['excludeSymbols', 'NXPI', 'Các mã KHÔNG tính vào giá trị danh mục / tổng tài sản (VD cổ phiếu RSU), cách nhau bằng dấu phẩy. Vẫn hiện trong bảng danh mục, chỉ không cộng vào các tổng'],
   ['savingsTaxRate', '5', 'Thuế khấu trừ (%) trên lãi tiết kiệm có kỳ hạn, dùng cho thẻ "Lãi tiết kiệm sắp nhận" ở Tổng quan']
 ];
 
@@ -914,10 +915,13 @@ function calcPortfolio_(txs, prices, cfg) {
     nmap[k] = Number(x.fxNow) > 0 ? Number(x.fxNow) : 0;
   });
   const positions = [];
-  let tCost = 0, tValue = 0, tRealized = 0;
+  let tCost = 0, tValue = 0, tRealized = 0, exValue = 0, exCost = 0;
+  const exSet = {};
+  String(cfg.excludeSymbols || '').split(',').forEach(function (x) { x = x.trim().toUpperCase(); if (x) exSet[x] = true; });
   Object.keys(pos).forEach(function (sym) {
     const p = pos[sym];
-    tRealized += p.realized;
+    const isEx = !!exSet[sym];   // mã loại trừ (VD RSU): vẫn hiện trong danh mục nhưng không cộng vào các tổng
+    if (!isEx) tRealized += p.realized;
     if (p.qty > 1e-9) {
       const hasPrice = pmap[sym] !== undefined && !isNaN(pmap[sym]);
       const price = hasPrice ? pmap[sym] : p.lastPrice;
@@ -930,6 +934,7 @@ function calcPortfolio_(txs, prices, cfg) {
       });
       // Hiển thị theo tiền tệ gốc (USD...) nếu cổ phiếu được giao dịch/định giá bằng ngoại tệ
       const pc = positions[positions.length - 1];
+      pc.excluded = isEx;
       const curOut = (fmap[sym] && fmap[sym] !== 'VND') ? fmap[sym] : (p.cur && p.cur !== 'VND' ? p.cur : '');
       if (curOut) {
         // Tỷ giá dự phòng (lần giao dịch gần nhất) chỉ dùng được khi giao dịch đó cùng loại tiền với tiền hiển thị
@@ -946,13 +951,14 @@ function calcPortfolio_(txs, prices, cfg) {
           if (sameCur) { pc.avgCostN = p.costN / p.qty; pc.costN = p.costN; pc.unrealizedN = pc.valueN - p.costN; }
         }
       }
-      tCost += p.cost; tValue += value;
+      if (isEx) { exCost += p.cost; exValue += value; } else { tCost += p.cost; tValue += value; }
     }
   });
   positions.sort(function (a, b) { return b.value - a.value; });
   return { positions: positions,
            totals: { cost: tCost, value: tValue, unrealized: tValue - tCost, realized: tRealized,
-                     unrealizedPct: tCost > 0 ? (tValue - tCost) / tCost * 100 : 0 } };
+                     unrealizedPct: tCost > 0 ? (tValue - tCost) / tCost * 100 : 0,
+                     excludedValue: exValue, excludedCost: exCost } };
 }
 
 function parseBrackets_(s) {
@@ -1181,7 +1187,7 @@ function aiSummary_() {
   const maturing = term.filter(function (s) { return s.calc.daysToMaturity !== null && s.calc.daysToMaturity <= 90; })
     .sort(function (x, y) { return x.calc.daysToMaturity - y.calc.daysToMaturity; }).slice(0, 8)
     .map(function (s) { return { con_ngay: s.calc.daysToMaturity, so_tien: round(Number(s.principal) + (s.type === 'TERM_END' ? s.calc.totalInterest : 0)) }; });
-  const pos = b.portfolio.positions, invTotal = b.portfolio.totals.value || 0;
+  const pos = b.portfolio.positions.filter(function (p) { return !p.excluded; }), invTotal = b.portfolio.totals.value || 0;
   const maxPos = pos.reduce(function (m, p) { return Math.max(m, p.value); }, 0);
   const series = (d.salarySeries || []).slice(-6);
   const avgNet = series.length ? series.reduce(function (a, s) { return a + s.net; }, 0) / series.length : 0;

@@ -141,12 +141,20 @@
   input.chg{border-color:var(--warn);background:#fffbeb}
   #cdlg{width:min(400px,92vw)}
   #cdlg p{margin:0 0 4px;color:var(--ink)}
+  .cb{position:relative}
+  .cb input{padding-right:36px}
+  .cbtn{position:absolute;right:4px;top:4px;bottom:4px;width:30px;border:0;background:none;color:var(--mute);cursor:pointer;font-size:14px;border-radius:6px}
+  .cbtn:hover{background:#f3f4f6}
+  .cbl{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);max-height:200px;overflow-y:auto;z-index:20}
+  .cbi{padding:8px 12px;cursor:pointer}
+  .cbi:hover{background:#e8f0fe;color:var(--pri)}
+  .cbe{padding:8px 12px;color:var(--mute);font-size:12px}
   @media(max-width:560px){.two{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header><div class="bar">
-  <h1>💰 Tài chính cá nhân</h1>
+  <h1>💰 Tài chính cá nhân <small style="font-size:10px;color:#9ca3af;font-weight:400">bản 11/11 combobox</small></h1>
   <nav id="nav">
     <button data-t="dash" class="on">Tổng quan</button>
     <button data-t="sav">Tiết kiệm</button>
@@ -321,7 +329,45 @@ var FORMS = {
 
 $('dlg').addEventListener('click', function(e){ if (e.target === $('dlg')) $('dlg').close(); });
 function listOf(ent){ return ent === 'expense' ? S.expenses : ent === 'savings' ? S.savings : ent === 'tx' ? S.tx : ent === 'salary' ? S.salary : ent === 'period' ? S.periods : S.prices; }
+// Ô Mã dạng combobox: bấm vào ô hoặc nút ▾ để xổ danh sách mã đã có, gõ để lọc, vẫn nhập được mã mới
+function initSymbolCombo(form){
+  var cb = form.querySelector('.cb'); if (!cb) return;
+  var inp = cb.querySelector('input'), list = cb.querySelector('.cbl'), btn = cb.querySelector('.cbtn');
+  var syms = knownSymbols();
+  function draw(filter){
+    var f = String(filter || '').toUpperCase().trim();
+    var items = syms.filter(function(x){ return !f || x.indexOf(f) >= 0; });
+    list.innerHTML = items.length ? items.map(function(x){ return '<div class="cbi" data-v="' + esc(x) + '">' + esc(x) + '</div>'; }).join('')
+      : '<div class="cbe">' + (syms.length ? 'Không có mã khớp - cứ gõ để thêm mã mới' : 'Chưa có mã nào - gõ để thêm mã mới') + '</div>';
+  }
+  function open(filter){ draw(filter); list.hidden = false; }
+  function close(){ list.hidden = true; }
+  inp.addEventListener('focus', function(){ open(''); });
+  inp.addEventListener('click', function(){ if (list.hidden) open(''); });
+  inp.addEventListener('input', function(){ open(inp.value); });
+  inp.addEventListener('keydown', function(e){ if (e.key === 'Escape' && !list.hidden){ e.stopPropagation(); e.preventDefault(); close(); } });
+  btn.addEventListener('click', function(){ if (list.hidden){ open(''); inp.focus(); } else close(); });
+  list.addEventListener('mousedown', function(e){ e.preventDefault(); });
+  list.addEventListener('click', function(e){
+    var it = e.target.closest('.cbi'); if (!it) return;
+    inp.value = it.getAttribute('data-v'); close();
+    inp.dispatchEvent(new Event('change', {bubbles: true}));
+  });
+  document.addEventListener('mousedown', function h(e){
+    if (!document.body.contains(cb)) { document.removeEventListener('mousedown', h); return; }
+    if (!cb.contains(e.target)) close();
+  });
+}
 function keyOf(ent){ return ent === 'price' ? 'symbol' : 'id'; }
+// Các mã đã từng nhập (giao dịch + bảng giá), duy nhất, sắp theo A-Z
+function knownSymbols(){
+  var seen = {}, out = [];
+  (S.tx || []).concat(S.prices || []).forEach(function(r){
+    var s = String(r.symbol || '').toUpperCase().trim();
+    if (s && !seen[s]) { seen[s] = 1; out.push(s); }
+  });
+  return out.sort();
+}
 
 function openForm(ent, key, preset){
   var f = FORMS[ent];
@@ -339,6 +385,10 @@ function openForm(ent, key, preset){
         h += '<select data-k="' + x.k + '">' + Object.keys(oo).map(function(o){ return '<option value="' + esc(o) + '"' + (o === v ? ' selected' : '') + '>' + esc(oo[o]) + '</option>'; }).join('') + '</select>';
       } else if (x.t === 'textarea') {
         h += '<textarea data-k="' + x.k + '" rows="8" placeholder="02/04/2026 6.575.342&#10;05/05/2026 7.232.877&#10;...&#10;16/03/2027 803.068.493">' + esc(v) + '</textarea>';
+      } else if (x.k === 'symbol' && (ent === 'tx' || ent === 'price') && !(ent === 'price' && key)) {
+        // Ô Mã: chọn từ các mã đã có (giao dịch + bảng giá) hoặc gõ mã mới
+        h += '<div class="cb"><input data-k="symbol" type="text" autocomplete="off" placeholder="Chọn mã đã có hoặc gõ mã mới" value="' + esc(v) + '">' +
+          '<button type="button" class="cbtn" tabindex="-1" aria-label="Xổ danh sách mã">▾</button><div class="cbl" hidden></div></div>';
       } else {
         h += '<input data-k="' + x.k + '" type="' + x.t + '"' + (x.step ? ' step="' + x.step + '"' : '') + (ent === 'price' && x.k === 'symbol' && key ? ' readonly' : '') + ' value="' + esc(v) + '">';
       }
@@ -346,6 +396,7 @@ function openForm(ent, key, preset){
     h += '<div class="err" id="ferr"></div><div class="acts"><button type="button" class="btn ghost" id="fc">Hủy</button><button type="submit" class="btn">Lưu</button></div></form>';
     $('dlgBody').innerHTML = h;
     var form = $('f');
+    initSymbolCombo(form);
     form.addEventListener('change', function(e){
       if (e.target.dataset.k === 'type' || e.target.dataset.k === 'currency'){ collect(); build(); }
     });
@@ -1065,7 +1116,7 @@ function txMoney(x, v){
 }
 function rInv(){
   var P = S.portfolio, t = P.totals;
-  var h = '<div class="grid">' + fxCard(P) + card('Giá trị danh mục', vnd(t.value), 'Vốn ' + vnd(t.cost)) +
+  var h = '<div class="grid">' + fxCard(P) + card('Giá trị danh mục', vnd(t.value), 'Vốn ' + vnd(t.cost) + (t.excludedValue > 0 ? '<br>Chưa gồm ' + vnd(t.excludedValue) + ' (mã loại trừ, VD RSU)' : '')) +
     card('Lãi/lỗ chưa chốt', '<span class="' + cls(t.unrealized) + '">' + vnd(t.unrealized) + '</span>', pct(t.unrealizedPct)) +
     card('Lãi/lỗ đã chốt', '<span class="' + cls(t.realized) + '">' + vnd(t.realized) + '</span>', 'Sau phí và thuế bán') + '</div>';
   h += '<div class="row"><h2>Danh mục đang nắm giữ</h2><span><button class="btn ghost" data-act="refresh">⚡ Lấy giá tự động</button> <button class="btn ghost" data-act="add" data-ent="price">Cập nhật giá</button> <button class="btn" data-act="add" data-ent="tx">+ Giao dịch</button></span></div>';
@@ -1074,9 +1125,9 @@ function rInv(){
     h += '<div class="scroll"><table><thead><tr><th>Mã</th><th>Loại</th><th class="n">SL</th><th class="n">Giá vốn BQ</th><th class="n">Giá hiện tại</th><th class="n">Giá trị</th><th class="n">Lãi/lỗ</th><th class="n">%</th><th></th></tr></thead><tbody>';
     P.positions.forEach(function(p){
       var pr = S.prices.filter(function(x){ return x.symbol === p.symbol; })[0];
-      h += '<tr><td><b>' + esc(p.symbol) + '</b>' + (p.mixedCurrency ? ' <span class="badge o" title="Mã này có giao dịch bằng nhiều loại tiền nên giá vốn và lãi/lỗ chỉ hiển thị bằng ₫">nhiều loại tiền</span>' : '') + '</td><td>' + esc(ASSET_LABEL[p.assetType] || p.assetType) + '</td><td class="n">' + num(p.qty, 4) + '</td><td class="n">' + posMoney(p, p.avgCostN, p.avgCost) + '</td><td class="n">' + posMoney(p, p.priceN, p.price) + (p.priceSource === 'lastTrade' ? ' <span class="badge o" title="Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất">*</span>' : (p.priceSource === 'auto' ? ' <span class="badge g" title="Giá tự động từ Google Finance' + (p.priceUpdated ? ', cập nhật ' + esc(p.priceUpdated) : '') + '">⚡</span>' : '')) + '</td><td class="n">' + posMoney(p, p.priceN != null ? p.valueN : null, p.value) + '</td><td class="n ' + cls(p.unrealized) + '">' + posMoney(p, p.unrealizedN, p.unrealized) + '</td><td class="n ' + cls(p.unrealizedPct) + '">' + pct(p.unrealizedPct) + '</td><td>' + (pr ? '<button class="lnk" data-act="edit" data-ent="price" data-key="' + esc(p.symbol) + '">Sửa giá</button><button class="lnk del" data-act="del" data-ent="price" data-key="' + esc(p.symbol) + '">Xóa giá</button>' : '<button class="lnk" data-act="autoprice" data-key="' + esc(p.symbol) + '">Giá tự động</button>') + '</td></tr>';
+      h += '<tr><td><b>' + esc(p.symbol) + '</b>' + (p.excluded ? ' <span class="badge x" title="Mã này không được cộng vào Giá trị danh mục / Tổng tài sản (cấu hình excludeSymbols)">Không tính vào tổng</span>' : '') + (p.mixedCurrency ? ' <span class="badge o" title="Mã này có giao dịch bằng nhiều loại tiền nên giá vốn và lãi/lỗ chỉ hiển thị bằng ₫">nhiều loại tiền</span>' : '') + '</td><td>' + esc(ASSET_LABEL[p.assetType] || p.assetType) + '</td><td class="n">' + num(p.qty, 4) + '</td><td class="n">' + posMoney(p, p.avgCostN, p.avgCost) + '</td><td class="n">' + posMoney(p, p.priceN, p.price) + (p.priceSource === 'lastTrade' ? ' <span class="badge o" title="Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất">*</span>' : (p.priceSource === 'auto' ? ' <span class="badge g" title="Giá tự động từ Google Finance' + (p.priceUpdated ? ', cập nhật ' + esc(p.priceUpdated) : '') + '">⚡</span>' : '')) + '</td><td class="n">' + posMoney(p, p.priceN != null ? p.valueN : null, p.value) + '</td><td class="n ' + cls(p.unrealized) + '">' + posMoney(p, p.unrealizedN, p.unrealized) + '</td><td class="n ' + cls(p.unrealizedPct) + '">' + pct(p.unrealizedPct) + '</td><td>' + (pr ? '<button class="lnk" data-act="edit" data-ent="price" data-key="' + esc(p.symbol) + '">Sửa giá</button><button class="lnk del" data-act="del" data-ent="price" data-key="' + esc(p.symbol) + '">Xóa giá</button>' : '<button class="lnk" data-act="autoprice" data-key="' + esc(p.symbol) + '">Giá tự động</button>') + '</td></tr>';
     });
-    h += '</tbody></table></div><div class="sub" style="margin:6px 0 0">* Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất. ⚡ = giá tự động từ Google Finance (chậm khoảng 15-20 phút). Giá vốn bình quân gia quyền đã gồm phí mua.</div>';
+    h += '</tbody></table></div><div class="sub" style="margin:6px 0 0">* Chưa nhập giá hiện tại, đang dùng giá giao dịch gần nhất. ⚡ = giá tự động từ Google Finance (chậm khoảng 15-20 phút). Giá vốn bình quân gia quyền đã gồm phí mua.' + (P.positions.some(function(p){ return p.excluded; }) ? ' Các mã gắn nhãn "Không tính vào tổng" (đổi ở tham số excludeSymbols) vẫn hiện ở bảng này nhưng không cộng vào giá trị danh mục, lãi/lỗ và tổng tài sản.' : '') + '</div>';
   }
   h += '<div class="row" style="margin-top:20px"><h2>Lịch sử giao dịch</h2></div>';
   if (!S.tx.length) h += '<div class="empty">Chưa có giao dịch.</div>';
