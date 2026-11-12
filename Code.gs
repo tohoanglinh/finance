@@ -40,8 +40,15 @@ const SCHEMA = {
   // Chi tiêu ước tính hàng tháng (đối chiếu với số dư tiết kiệm không kỳ hạn)
   expense: {
     sheet: 'ChiTieu',
-    cols: [['id', 'ID'], ['name', 'Khoản chi'], ['amount', 'Số tiền / tháng'], ['status', 'Trạng thái (active/paused)'], ['note', 'Ghi chú']],
-    text: ['id']
+    cols: [['id', 'ID'], ['name', 'Khoản chi'], ['amount', 'Ngân sách / tháng'], ['status', 'Trạng thái (active/paused)'], ['note', 'Ghi chú'],
+           ['from', 'Áp dụng từ tháng (trống = từ đầu)'], ['to', 'Đến hết tháng (trống = không giới hạn)']],
+    text: ['id', 'from', 'to']
+  },
+  // Chi tiêu thực tế: mỗi khoản mỗi tháng một dòng
+  spend: {
+    sheet: 'ThucChi',
+    cols: [['id', 'ID'], ['month', 'Tháng'], ['name', 'Khoản chi'], ['amount', 'Thực chi'], ['note', 'Ghi chú']],
+    text: ['id', 'month', 'name']
   },
   // Giai đoạn áp dụng: từ tháng "from" đến hết tháng "to" (trống = không giới hạn), tham số "key" (trong CauHinh) đổi sang "value"
   // Cột "to" đặt cuối cùng để sheet GiaiDoan tạo từ phiên bản cũ tự được bổ sung cột mới
@@ -59,6 +66,7 @@ const NUMERIC = {
   tx: ['qty', 'price', 'fee', 'fxRate'],
   price: ['price', 'fxNow'],
   expense: ['amount'],
+  spend: ['amount'],
   salary: ['base', 'allowance', 'bonus', 'exempt', 'dependents', 'otherDeduction', 'insBase']
 };
 
@@ -70,7 +78,7 @@ const DEFAULT_PERIODS = [
 const TEXT_KEYS = ['taxBrackets', 'regionMin', 'sellTaxTypes'];
 
 // Tiền tố ID dễ đọc theo từng loại bản ghi: TK-001, DT-001, LG-001, AD-001
-const ID_PREFIX = { savings: 'TK', tx: 'DT', salary: 'LG', period: 'AD', expense: 'CT' };
+const ID_PREFIX = { savings: 'TK', tx: 'DT', salary: 'LG', period: 'AD', expense: 'CT', spend: 'TC' };
 
 const CONFIG_SHEET = 'CauHinh';
 // [key, value, mô tả]
@@ -117,6 +125,7 @@ function api(action, p) {
       case 'refreshPrices': return { ok: true, data: refreshPrices_(p && p.symbol, p && p.background) };
       case 'saveConfig': return { ok: true, data: saveConfig_(p) };
       case 'aiAnalyze': return { ok: true, data: aiAnalyze_() };
+      case 'aiChat': return { ok: true, data: aiChat_(p) };
       case 'calcSalary': return { ok: true, data: calcSalary_(p, cfgForMonth_(p.month)) };
       case 'grossFromNet': return { ok: true, data: grossFromNet_(p, cfgForMonth_(p.month)) };
       default: return { ok: false, error: 'Hành động không hợp lệ: ' + action };
@@ -280,6 +289,13 @@ function save_(ent, rec) {
       rec.symbol = String(rec.symbol || '').toUpperCase().trim();
       rec.currency = String(rec.currency || 'VND').toUpperCase().trim();
       if (rec.currency === 'VND') { rec.currency = ''; rec.fxRate = ''; }
+    }
+    // Thực chi: mỗi khoản mỗi tháng chỉ có 1 dòng, nhập lại thì ghi đè
+    if (ent === 'spend') {
+      rec.name = String(rec.name || '').trim();
+      const low = function (x) { return String(x).trim().toLowerCase(); };
+      const ex = readAll_('spend').filter(function (r) { return r.month === rec.month && low(r.name) === low(rec.name); })[0];
+      if (ex) rec.id = ex.id;
     }
     // Lương: mỗi tháng chỉ có 1 dòng. Nhập lại cùng tháng thì ghi đè dòng cũ.
     if (ent === 'salary') {
@@ -479,6 +495,16 @@ function validate_(ent, r) {
     if (!String(r.name || '').trim()) throw new Error('Nhập tên khoản chi');
     if (!num(r.amount) || Number(r.amount) <= 0) throw new Error('Số tiền chi mỗi tháng phải lớn hơn 0');
     if (r.status !== 'active' && r.status !== 'paused') throw new Error('Trạng thái không hợp lệ');
+    const mre = /^\d{4}-\d{2}$/;
+    if (String(r.from || '').trim() && !mre.test(String(r.from))) throw new Error('"Áp dụng từ tháng" phải có dạng yyyy-MM');
+    if (String(r.to || '').trim() && !mre.test(String(r.to))) throw new Error('"Đến hết tháng" phải có dạng yyyy-MM');
+    if (String(r.from || '').trim() && String(r.to || '').trim() && String(r.to) < String(r.from)) throw new Error('"Đến hết tháng" phải sau hoặc bằng "Áp dụng từ tháng"');
+    return;
+  }
+  if (ent === 'spend') {
+    if (!/^\d{4}-\d{2}$/.test(String(r.month || ''))) throw new Error('Tháng phải có dạng yyyy-MM');
+    if (!String(r.name || '').trim()) throw new Error('Thiếu tên khoản chi');
+    if (r.amount === '' || r.amount === null || isNaN(Number(r.amount)) || Number(r.amount) < 0) throw new Error('Số tiền thực chi phải là số từ 0 trở lên');
     return;
   }
   if (ent === 'savings') {
@@ -1033,7 +1059,7 @@ function bootstrap_() {
   return { today: today, aiReady: aiReady_(), config: cfg, periods: periods,
            configInfo: DEFAULT_CONFIG.map(function (d) { return { key: d[0], desc: d[2] }; }),
            savings: savings, tx: tx, prices: prices, portfolio: portfolio, salary: salary,
-           expenses: readAll_('expense'),
+           expenses: readAll_('expense'), spends: readAll_('spend'),
            dashboard: buildDashboard_(savings, portfolio, salary, today, cfg) };
 }
 
@@ -1122,7 +1148,7 @@ const AI_DEFAULT_MODEL = { gemini: 'gemini-3.5-flash-lite', anthropic: 'claude-h
 const AI_SYSTEM = [
   'Bạn là chuyên gia phân tích tài chính cá nhân, trả lời bằng tiếng Việt, giọng thân thiện và thẳng thắn.',
   'Bạn được cung cấp số liệu TỔNG HỢP từ một ứng dụng quản lý tài chính cá nhân (VND). Chỉ dùng số liệu được cung cấp, tuyệt đối không bịa thêm số.',
-  'Chi tiêu hằng tháng chỉ là số ước tính do người dùng tự nhập (nếu có trong số liệu). Ứng dụng KHÔNG có dữ liệu về nợ, bảo hiểm nhân thọ, tài sản khác (nhà, xe...). Nếu cần những thứ đó để kết luận thì nói rõ là chưa đủ dữ liệu, đừng đoán.',
+  'Chi tiêu hằng tháng gồm ngân sách do người dùng đặt và số thực chi do người dùng tự nhập (nếu có trong số liệu), không phải dữ liệu ngân hàng. Ứng dụng KHÔNG có dữ liệu về nợ, bảo hiểm nhân thọ, tài sản khác (nhà, xe...). Nếu cần những thứ đó để kết luận thì nói rõ là chưa đủ dữ liệu, đừng đoán.',
   'Trình bày bằng Markdown đơn giản với đúng 4 phần (tiêu đề ##): "Đánh giá chung" (1 câu kết luận: Tốt / Ổn / Cần chú ý, kèm 2-3 câu lý do), "Điểm mạnh", "Rủi ro và điều cần lưu ý", "Gợi ý hành động" (3-5 gạch đầu dòng, cụ thể, có con số khi có thể).',
   'Các góc nhìn nên cân nhắc nếu có dữ liệu: mức tiền khả dụng so với thu nhập, mức độ tập trung (một sổ tiết kiệm hay một mã đầu tư chiếm tỷ trọng lớn), tỷ trọng đầu tư rủi ro, lãi suất bình quân, các khoản sắp đáo hạn cần quyết định tái tục, độ ổn định thu nhập.',
   'Không khuyên mua hoặc bán một mã cụ thể. Không cần lời chào hay lời rào đón dài. Tối đa khoảng 350 từ.'
@@ -1162,6 +1188,32 @@ function aiSummary_() {
   const ls = d.latestSalary;
   const spend = (b.expenses || []).filter(function (x) { return x.status !== 'paused'; })
     .reduce(function (a, x) { return a + (Number(x.amount) || 0); }, 0);
+  // Chi tiêu: ngân sách tháng này so với thực chi, và tổng thực chi các tháng gần đây
+  const curM = b.today.slice(0, 7), lowN = function (x) { return String(x || '').trim().toLowerCase(); };
+  const budgetOf = function (m) {
+    const out = {}, order = [];
+    (b.expenses || []).filter(function (x) { return x.status !== 'paused' && (!x.from || String(x.from) <= m) && (!x.to || m <= String(x.to)); })
+      .sort(function (a, c) { return String(a.from || '').localeCompare(String(c.from || '')); })
+      .forEach(function (x) { const k = lowN(x.name); if (!(k in out)) order.push(k); out[k] = { name: String(x.name).trim(), amount: Number(x.amount) || 0 }; });
+    return { out: out, order: order };
+  };
+  const spendIn = function (m) { return (b.spends || []).filter(function (r) { return r.month === m; }); };
+  const bm = budgetOf(curM), spCur = spendIn(curM);
+  const byKhoan = bm.order.map(function (k) {
+    const r = spCur.filter(function (x) { return lowN(x.name) === k; })[0];
+    return { khoan: bm.out[k].name, ngan_sach: round(bm.out[k].amount), thuc_chi: r ? round(r.amount) : null };
+  });
+  const recent = [1, 2, 3].map(function (i) {
+    const d0 = new Date(Date.UTC(Number(curM.slice(0, 4)), Number(curM.slice(5, 7)) - 1 - i, 1));
+    const m = d0.getUTCFullYear() + '-' + ('0' + (d0.getUTCMonth() + 1)).slice(-2), rows = spendIn(m);
+    if (!rows.length) return null;
+    return { thang: m, tong_thuc_chi: round(rows.reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0)),
+             theo_khoan: rows.map(function (r) { return { khoan: String(r.name), so_tien: round(r.amount) }; }) };
+  }).filter(function (x) { return x; });
+  const chiTieu = (byKhoan.length || recent.length) ? {
+    thang_nay: { thang: curM, tong_ngan_sach: round(byKhoan.reduce(function (a, x) { return a + x.ngan_sach; }, 0)),
+                 tong_thuc_chi_da_nhap: round(spCur.reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0)), theo_khoan: byKhoan },
+    cac_thang_truoc: recent } : null;
   return {
     ngay: b.today,
     tong_tai_san: round(total),
@@ -1177,6 +1229,7 @@ function aiSummary_() {
               lai_lo_chua_chot_pct: d.investCost > 0 ? Math.round(d.investUnrealized / d.investCost * 1000) / 10 : 0,
               lai_lo_da_chot: round(d.investRealized), so_ma_dang_giu: pos.length,
               ma_lon_nhat_pct_danh_muc: pctOf(maxPos, invTotal) },
+    chi_tieu: chiTieu,
     chi_tieu_hang_thang_uoc_tinh: spend > 0 ? { tong: round(spend),
       tien_khong_ky_han_du_cho_bao_nhieu_thang_chi_tieu: Math.round(d.demandBalance / spend * 10) / 10 } : null,
     luong: ls ? { thang_gan_nhat: ls.month, net_gan_nhat: round(ls.net), gross_gan_nhat: round(ls.gross), thue_gan_nhat: round(ls.tax),
@@ -1186,16 +1239,18 @@ function aiSummary_() {
 }
 
 function aiCall_(cfg, system, user) {
+  // user: một chuỗi (1 lượt) hoặc mảng [{role:'user'|'assistant', text}] (hội thoại)
+  const msgs = typeof user === 'string' ? [{ role: 'user', text: user }] : user;
   let url, headers, payload;
   if (cfg.provider === 'gemini') {
     url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(cfg.model) + ':generateContent';
     headers = { 'x-goog-api-key': cfg.key };
-    payload = { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: user }] }],
+    payload = { systemInstruction: { parts: [{ text: system }] }, contents: msgs.map(function (m) { return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.text }] }; }),
                 generationConfig: { maxOutputTokens: 4000 } };   // không đặt temperature: các model Gemini 3.x từ chối tham số này
   } else {
     url = 'https://api.anthropic.com/v1/messages';
     headers = { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' };
-    payload = { model: cfg.model, max_tokens: 1500, system: system, messages: [{ role: 'user', content: user }] };
+    payload = { model: cfg.model, max_tokens: 1500, system: system, messages: msgs.map(function (m) { return { role: m.role, content: m.text }; }) };
   }
   const res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', headers: headers, payload: JSON.stringify(payload), muteHttpExceptions: true });
   const code = res.getResponseCode(), body = res.getContentText();
@@ -1236,5 +1291,44 @@ function aiAnalyze_() {
   } catch (e) {
     cache.remove('AI_BUSY');
     throw e;
+  }
+}
+
+
+// ===================== CHAT VỚI AI =====================
+const AI_CHAT_SYSTEM = [
+  'Bạn là trợ lý tài chính cá nhân trong một ứng dụng quản lý tài chính (đơn vị VND), trả lời bằng tiếng Việt, ngắn gọn, thân thiện, thẳng thắn.',
+  'Dưới đây là SỐ LIỆU TỔNG HỢP mới nhất của người dùng (JSON). Chỉ dùng số liệu này để trả lời về tình hình của họ; không bịa số. Nếu câu hỏi cần dữ liệu không có (nợ, bảo hiểm, tài sản khác, tên sổ, mã cổ phiếu cụ thể...) thì nói rõ là ứng dụng không có, và hỏi lại hoặc trả lời ở mức nguyên tắc chung.',
+  'Có thể tính toán, so sánh, giải thích các khái niệm (lãi suất, thuế thu nhập cá nhân, quỹ dự phòng...). Khi trả lời có con số, nêu cách tính ngắn gọn.',
+  'Không khuyên mua hoặc bán một mã cụ thể; với quyết định lớn, nhắc đây chỉ là tham khảo, không thay thế tư vấn chuyên nghiệp.',
+  'Mặc định trả lời dưới 150 từ, dùng gạch đầu dòng khi liệt kê, có thể dùng **in đậm** cho ý chính. Không chào hỏi dài dòng.'
+].join('\n');
+
+/** p.messages: [{role:'user'|'assistant', text}] - lịch sử hội thoại do trình duyệt giữ, tối đa 12 lượt gần nhất */
+function aiChat_(p) {
+  const cfg = aiConfig_();
+  if (!cfg.key) throw new Error('Chưa cấu hình khóa API. Xem mục "Phân tích bằng AI" trong README (Cài đặt dự án → Thuộc tính tập lệnh).');
+  let msgs = (p && p.messages ? p.messages : []).slice(-12).map(function (m) {
+    return { role: m && m.role === 'assistant' ? 'assistant' : 'user', text: String(m && m.text || '').trim().slice(0, 2000) };
+  }).filter(function (m) { return m.text; });
+  // Hội thoại phải bắt đầu bằng lượt của người dùng, xen kẽ và kết thúc bằng câu hỏi
+  while (msgs.length && msgs[0].role !== 'user') msgs.shift();
+  const merged = [];
+  msgs.forEach(function (m) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) last.text += '\n' + m.text; else merged.push({ role: m.role, text: m.text });
+  });
+  if (!merged.length || merged[merged.length - 1].role !== 'user') throw new Error('Hãy nhập câu hỏi');
+  // Chống bấm gửi liên tiếp
+  const cache = CacheService.getUserCache();
+  if (cache.get('AI_CHAT_BUSY')) throw new Error('AI đang xử lý câu trước, đợi vài giây rồi gửi lại');
+  cache.put('AI_CHAT_BUSY', '1', 4);
+  try {
+    const summary = aiSummary_();
+    const system = AI_CHAT_SYSTEM + '\n\nSố liệu tổng hợp (JSON):\n' + JSON.stringify(summary);
+    const text = aiCall_(cfg, system, merged);
+    return { text: text, provider: cfg.provider, model: cfg.model };
+  } finally {
+    cache.remove('AI_CHAT_BUSY');
   }
 }
