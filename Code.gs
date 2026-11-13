@@ -116,7 +116,7 @@ function onOpen() {
 }
 
 function api(action, p) {
-  const dispatch = function () {
+  const run = function () {
     switch (action) {
       case 'bootstrap': return { ok: true, data: bootstrap_() };
       case 'save': return { ok: true, data: save_(p.entity, p.record) };
@@ -127,9 +127,18 @@ function api(action, p) {
       case 'saveConfig': return { ok: true, data: saveConfig_(p) };
       case 'aiAnalyze': return { ok: true, data: aiAnalyze_() };
       case 'aiChat': return { ok: true, data: aiChat_(p) };
+      case 'aiSimulate': return { ok: true, data: aiSimulate_(p) };
       case 'calcSalary': return { ok: true, data: calcSalary_(p, cfgForMonth_(p.month)) };
       case 'grossFromNet': return { ok: true, data: grossFromNet_(p, cfgForMonth_(p.month)) };
       default: return { ok: false, error: 'Hành động không hợp lệ: ' + action };
+    }
+  };
+  const MUTATING = { save: 1, saveSalaryRange: 1, savePeriodBatch: 1, remove: 1, saveConfig: 1, refreshPrices: 1 };
+  const dispatch = function () {
+    try { return run(); }
+    finally {
+      // Dữ liệu có thể đã đổi (kể cả khi lỗi giữa chừng): bỏ tóm tắt AI đã nhớ
+      if (MUTATING[action]) { try { CacheService.getScriptCache().remove(AI_SUM_KEY); } catch (e) { /* bỏ qua */ } }
     }
   };
   try {
@@ -1105,6 +1114,81 @@ function nextSavingsPayout_(active, today, cfg) {
   return first;
 }
 
+/** Ngày nhận lương của một tháng: ngày cuối tháng; rơi vào thứ 7 / chủ nhật thì lùi về thứ 6 (chưa xét ngày lễ) */
+function payDateOf_(month) {
+  const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
+  let d = new Date(Date.UTC(y, m, 0));
+  const w = d.getUTCDay();
+  if (w === 6) d = new Date(d.getTime() - 86400000);
+  else if (w === 0) d = new Date(d.getTime() - 2 * 86400000);
+  return fmtDate_(d);
+}
+
+/**
+ * Mọi khoản tiền sẽ nhận trong `horizon` ngày tới: lãi tiết kiệm (sau thuế khấu trừ), gốc hoàn lại khi đáo hạn, lương net.
+ * Tháng chưa có dữ liệu lương được ước tính theo lương tháng gần nhất (bỏ thưởng).
+ */
+function upcomingIncome_(active, salary, today, cfg, horizon) {
+  const H = horizon || 365;
+  const tr = Number(cfg && cfg.savingsTaxRate), taxRate = isNaN(tr) ? 5 : tr, keep = 1 - taxRate / 100;
+  const t = parseDate_(today);
+  const events = [];
+  const add = function (e) {
+    const days = daysBetween_(t, parseDate_(e.date));
+    if (days < 0 || days > H) return;
+    e.days = days; events.push(e);
+  };
+  active.forEach(function (s) {
+    if (s.type === 'DEMAND') return;
+    const c = s.calc, P = Number(s.principal) || 0, r = (Number(s.rate) || 0) / 100, term = Number(s.termMonths) || 0;
+    if (s.type === 'TERM_MONTHLY') {
+      if (c.schedule && c.schedule.length) {
+        c.schedule.forEach(function (x, i) {
+          const last = i === c.schedule.length - 1;
+          add({ kind: last ? 'maturity' : 'interest', name: s.name, date: x.date, interest: Math.round(x.interest * keep), principal: last ? P : 0 });
+        });
+      } else {
+        const start = parseDate_(s.startDate), mi = Math.round(P * r / 12);
+        for (let k = 1; k <= term; k++) {
+          const last = k === term;
+          add({ kind: last ? 'maturity' : 'interest', name: s.name, date: fmtDate_(addMonths_(start, k)), interest: Math.round(mi * keep), principal: last ? P : 0 });
+        }
+      }
+    } else if (s.type === 'TERM_END' && c.maturityDate) {
+      add({ kind: 'maturity', name: s.name, date: c.maturityDate, interest: Math.round((Number(c.totalInterest) || 0) * keep), principal: P });
+    }
+  });
+  const periods = readAll_('period');   // đọc một lần cho mọi tháng ước tính
+  const byMonth = {};
+  salary.forEach(function (s) { byMonth[s.month] = s; });
+  const curM = today.slice(0, 7);
+  const latest = salary.filter(function (s) { return String(s.month) <= curM; })[0] || salary[0];   // salary đã sắp giảm dần theo tháng
+  const until = fmtDate_(new Date(t.getTime() + H * 86400000));
+  monthsBetween_(curM, until.slice(0, 7)).forEach(function (m) {
+    const rec = byMonth[m];
+    let net = 0;
+    if (rec) net = rec.calc.net;
+    else if (latest) {
+      const base = JSON.parse(JSON.stringify(latest)); delete base.calc; base.bonus = 0; base.month = m;
+      net = calcSalary_(base, cfgFor_(cfg, periods, m)).net;
+    } else return;
+    add({ kind: 'salary', month: m, date: payDateOf_(m), net: net, estimated: !rec });
+  });
+  events.sort(function (a, b) { return a.date.localeCompare(b.date) || (a.kind === 'salary' ? -1 : 1); });
+  const tot = { salary: 0, interest: 0, principal: 0 };
+  events.forEach(function (e) {
+    if (e.kind === 'salary') tot.salary += e.net; else { tot.interest += e.interest; tot.principal += e.principal; }
+  });
+  tot.all = tot.salary + tot.interest + tot.principal;
+  return { horizon: H, untilDate: until, taxRate: taxRate, events: events, totals: tot };
+}
+
+/** Các khoản nhận từ sổ tiết kiệm có kỳ hạn trong 5 năm tới (lãi sau thuế khấu trừ, gốc khi đáo hạn): dữ liệu cho biểu đồ thang đáo hạn & lãi */
+function ladderEvents_(active, today, cfg) {
+  const r = upcomingIncome_(active, [], today, cfg, 1830);   // không truyền lương nên chỉ còn các khoản từ sổ tiết kiệm
+  return { taxRate: r.taxRate, events: r.events.map(function (e) { return { kind: e.kind, name: e.name, date: e.date, interest: e.interest, principal: e.principal }; }) };
+}
+
 function buildDashboard_(savings, portfolio, salary, today, cfg) {
   const active = savings.filter(function (s) { return s.status !== 'closed'; });
   const sPrincipal = active.reduce(function (a, s) { return a + Number(s.principal); }, 0);
@@ -1138,7 +1222,7 @@ function buildDashboard_(savings, portfolio, salary, today, cfg) {
   return { savingsPrincipal: sPrincipal, savingsValue: sValue, termPrincipal: termPrincipal, termValue: termValue,
            demandBalance: demandBalance, demandAccounts: demandAccounts, monthlyInterestIncome: monthlyIncome, savingsByType: byType,
            investValue: portfolio.totals.value, investCost: portfolio.totals.cost, investUnrealized: portfolio.totals.unrealized,
-           investRealized: portfolio.totals.realized, totalAssets: sValue + portfolio.totals.value, upcoming: upcoming, nextSavingsPayout: nextSavingsPayout_(active, today, cfg),
+           investRealized: portfolio.totals.realized, totalAssets: sValue + portfolio.totals.value, upcoming: upcoming, nextSavingsPayout: nextSavingsPayout_(active, today, cfg), incoming: upcomingIncome_(active, salary, today, cfg, 365), ladder: ladderEvents_(active, today, cfg),
            latestSalary: past.length ? { month: past[0].month, net: past[0].calc.net, gross: past[0].calc.gross, tax: past[0].calc.tax } : null,
            ytd: ytd, yearPlan: plan, salarySeries: series };
 }
@@ -1174,7 +1258,7 @@ function aiReady_() {
 }
 
 /** Số liệu tổng hợp gửi cho AI: KHÔNG có tên sổ, mã cổ phiếu, ghi chú */
-function aiSummary_() {
+function aiSummaryBuild_() {
   const b = bootstrap_(), d = b.dashboard;
   const round = function (x) { return Math.round(Number(x) || 0); };
   const pctOf = function (v, t) { return t > 0 ? Math.round(v / t * 1000) / 10 : 0; };
@@ -1244,7 +1328,20 @@ function aiSummary_() {
   };
 }
 
-function aiCall_(cfg, system, user) {
+const AI_SUM_KEY = 'AI_SUMMARY_V1';
+/** Tóm tắt dùng chung cho phân tích và chat: nhớ 5 phút, tự xóa ngay khi có thay đổi dữ liệu (xem api) để khỏi tính lại mỗi tin nhắn */
+function aiSummary_() {
+  const cache = CacheService.getScriptCache();
+  try {
+    const hit = cache.get(AI_SUM_KEY);
+    if (hit) { const o = JSON.parse(hit); if (o && o.ngay === today_()) return o; }
+  } catch (e) { /* cache hỏng: tính lại */ }
+  const s = aiSummaryBuild_();
+  try { cache.put(AI_SUM_KEY, JSON.stringify(s), 300); } catch (e) { /* quá lớn hoặc lỗi cache: bỏ qua */ }
+  return s;
+}
+
+function aiCall_(cfg, system, user, opts) {
   // user: một chuỗi (1 lượt) hoặc mảng [{role:'user'|'assistant', text}] (hội thoại)
   const msgs = typeof user === 'string' ? [{ role: 'user', text: user }] : user;
   let url, headers, payload;
@@ -1252,7 +1349,7 @@ function aiCall_(cfg, system, user) {
     url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(cfg.model) + ':generateContent';
     headers = { 'x-goog-api-key': cfg.key };
     payload = { systemInstruction: { parts: [{ text: system }] }, contents: msgs.map(function (m) { return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.text }] }; }),
-                generationConfig: { maxOutputTokens: 4000 } };   // không đặt temperature: các model Gemini 3.x từ chối tham số này
+                generationConfig: Object.assign({ maxOutputTokens: 4000 }, opts && opts.json ? { responseMimeType: 'application/json' } : {}) };   // không đặt temperature: các model Gemini 3.x từ chối tham số này
   } else {
     url = 'https://api.anthropic.com/v1/messages';
     headers = { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' };
@@ -1336,5 +1433,264 @@ function aiChat_(p) {
     return { text: text, provider: cfg.provider, model: cfg.model };
   } finally {
     cache.remove('AI_CHAT_BUSY');
+  }
+}
+
+
+// ===================== MÔ PHỎNG "NẾU..." BẰNG AI =====================
+// AI chỉ làm 2 việc: (1) chuyển câu mô tả thành các giả định có cấu trúc (JSON), (2) diễn giải kết quả.
+// Mọi con số do hàm simulate_ tính (cùng công thức với thẻ "Tiền sắp nhận"), không để AI tự tính.
+
+function aiSimParseSystem_(today) {
+  return [
+    'Bạn chuyển một câu mô tả tình huống tài chính cá nhân (tiếng Việt) thành JSON giả định để một chương trình tính dòng tiền. CHỈ trả về một đối tượng JSON, không giải thích, không markdown.',
+    'Hôm nay là ' + today + '. "offset" là số tháng tính từ tháng hiện tại: 0 = tháng ' + today.slice(0, 7) + ' (đang diễn ra), 1 = tháng sau, 2 = hai tháng sau...',
+    'Tiền VND, viết thành số nguyên (1 triệu = 1000000, 1 tỷ = 1000000000, 100k = 100000). Số dương = tiền vào, số âm = tiền ra.',
+    'Các trường (chỉ ghi trường nào kịch bản có thay đổi, bỏ qua trường còn lại):',
+    '- months: số tháng mô phỏng (1-36). Mặc định 12; nếu kịch bản kéo dài hơn thì đặt dài hơn.',
+    '- salaryChangePct: % thay đổi lương hợp đồng (tăng là số dương, giảm là số âm); salaryFromOffset: bắt đầu từ offset nào (mặc định 1).',
+    '- incomeStop: {"fromOffset": số, "months": số tháng, hoặc null nếu kéo dài đến hết kỳ} khi mất toàn bộ thu nhập từ lương (nghỉ việc, nghỉ không lương...).',
+    '- spendChangePct: % thay đổi chi tiêu hằng tháng so với hiện tại; spendFromOffset: từ offset nào (mặc định 1).',
+    '- recurring: mảng khoản thu/chi lặp hằng tháng [{"label","amountPerMonth","fromOffset","months"(null = đến hết kỳ)}]. Ví dụ thêm thu nhập phụ 5 triệu/tháng: amountPerMonth 5000000; thêm tiền học của con 3 triệu/tháng: -3000000.',
+    '- oneOffs: mảng khoản một lần [{"label","offset","amount"}]. Ví dụ mua xe 300 triệu sau 3 tháng: {"label":"mua xe","offset":3,"amount":-300000000}.',
+    '- newTermDeposits: mảng gửi thêm sổ tiết kiệm có kỳ hạn, lãi cuối kỳ [{"offset","amount"(số dương),"ratePct","termMonths"}].',
+    '- renewMaturities: true nếu các sổ tiết kiệm đáo hạn được tái tục (gốc không quay về tài khoản không kỳ hạn).',
+    '- summary: 1 câu tóm tắt kịch bản bằng tiếng Việt.',
+    'Nếu câu mô tả thiếu thông tin bắt buộc (ví dụ gửi tiết kiệm mà không nói lãi suất, kỳ hạn hoặc số tiền) hoặc không phải tình huống tài chính cá nhân, trả về {"error": "câu hỏi lại ngắn gọn bằng tiếng Việt"}.'
+  ].join('\n');
+}
+
+const AI_SIM_EXPLAIN = [
+  'Bạn là trợ lý tài chính cá nhân, trả lời bằng tiếng Việt, thẳng thắn, ngắn gọn.',
+  'Bạn nhận được JSON gồm: câu hỏi gốc của người dùng, các giả định đã áp dụng, và KẾT QUẢ mô phỏng dòng tiền do chương trình tính (tiền khả dụng = số dư tiền không kỳ hạn, theo từng tháng, so giữa "giữ nguyên" và "theo kịch bản").',
+  'Chỉ dùng số liệu trong JSON, không tự thêm số khác (chỉ cộng/trừ/chia đơn giản từ các số đã cho). Viết tiền dạng "x triệu" / "x tỷ" cho dễ đọc, tháng dạng yyyy-MM.',
+  'Trình bày Markdown đơn giản đúng 3 phần (tiêu đề ##): "Kết luận" (trả lời thẳng câu hỏi trong 1-2 câu), "Điều đáng chú ý" (2-4 gạch đầu dòng: tháng thấp nhất, tháng bắt đầu âm nếu có, chênh lệch cuối kỳ), "Gợi ý" (2-3 gạch đầu dòng cụ thể).',
+  'Nếu tien_khoa_them > 0: nói rõ khoản đó không mất đi mà chuyển sang sổ tiết kiệm/tái tục nên không nằm trong tiền khả dụng. Nếu chi tiêu cơ sở bằng 0 hoặc thiếu dữ liệu chi tiêu, nhắc kết quả sẽ lạc quan.',
+  'Không khuyên mua hoặc bán mã cụ thể. Không chào hỏi dài dòng. Tối đa khoảng 220 từ.'
+].join('\n');
+
+function extractJson_(t) {
+  const s = String(t || '').trim();
+  const a = s.indexOf('{'), z = s.lastIndexOf('}');
+  if (a < 0 || z <= a) throw new Error('AI không hiểu được tình huống, hãy diễn đạt lại rõ hơn');
+  try { return JSON.parse(s.slice(a, z + 1)); } catch (e) { throw new Error('AI trả về kết quả không đọc được, hãy thử lại hoặc diễn đạt lại'); }
+}
+
+function simNum_(v, lo, hi, dflt) {
+  if (v === null || v === undefined || v === '') return dflt;
+  const n = Number(v);
+  if (!isFinite(n)) return dflt;
+  return Math.min(hi, Math.max(lo, n));
+}
+function simOff_(v, dflt, N) { return Math.round(simNum_(v, 0, N, dflt)); }
+function simMonthsOrNull_(v) { return (v === null || v === undefined || v === '') ? null : Math.round(simNum_(v, 1, 36, 1)); }
+
+/** Làm sạch JSON do AI trả về: ép kiểu, giới hạn khoảng giá trị, bỏ phần thừa. Ném lỗi nếu không có thay đổi nào. */
+function simSanitize_(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  if (r.error) throw new Error(String(r.error).slice(0, 300));
+  const N = Math.round(simNum_(r.months, 1, 36, 12));
+  const sc = { months: N, summary: String(r.summary || '').slice(0, 300), renewMaturities: r.renewMaturities === true,
+    salaryChangePct: simNum_(r.salaryChangePct, -100, 500, 0), salaryFromOffset: simOff_(r.salaryFromOffset, 1, N),
+    spendChangePct: simNum_(r.spendChangePct, -100, 500, 0), spendFromOffset: simOff_(r.spendFromOffset, 1, N),
+    incomeStop: null, recurring: [], oneOffs: [], newTermDeposits: [] };
+  const st = r.incomeStop;
+  if (st && typeof st === 'object') sc.incomeStop = { fromOffset: simOff_(st.fromOffset, 1, N), months: simMonthsOrNull_(st.months) };
+  (Array.isArray(r.recurring) ? r.recurring : []).slice(0, 5).forEach(function (x) {
+    const a = x ? Math.round(simNum_(x.amountPerMonth, -1e11, 1e11, 0)) : 0;
+    if (!a) return;
+    sc.recurring.push({ label: String(x.label || '').slice(0, 60), amountPerMonth: a, fromOffset: simOff_(x.fromOffset, 1, N), months: simMonthsOrNull_(x.months) });
+  });
+  (Array.isArray(r.oneOffs) ? r.oneOffs : []).slice(0, 8).forEach(function (x) {
+    const a = x ? Math.round(simNum_(x.amount, -1e12, 1e12, 0)) : 0;
+    if (!a) return;
+    sc.oneOffs.push({ label: String(x.label || '').slice(0, 60), offset: simOff_(x.offset, 1, N), amount: a });
+  });
+  (Array.isArray(r.newTermDeposits) ? r.newTermDeposits : []).slice(0, 3).forEach(function (x) {
+    const a = x ? Math.round(simNum_(x.amount, 0, 1e12, 0)) : 0;
+    const term = x ? Math.round(simNum_(x.termMonths, 1, 120, 0)) : 0;
+    const rate = x ? simNum_(x.ratePct, 0, 100, -1) : -1;
+    if (!a || !term || rate < 0) return;
+    sc.newTermDeposits.push({ offset: simOff_(x.offset, 1, N), amount: a, ratePct: rate, termMonths: term });
+  });
+  const changed = sc.salaryChangePct !== 0 || sc.spendChangePct !== 0 || sc.incomeStop || sc.recurring.length || sc.oneOffs.length || sc.newTermDeposits.length || sc.renewMaturities;
+  if (!changed) throw new Error('Chưa nhận ra thay đổi cụ thể nào trong câu mô tả (số tiền, tỷ lệ %, thời điểm...). Hãy diễn đạt rõ hơn, ví dụ: "nếu tôi nghỉ việc 6 tháng".');
+  return sc;
+}
+
+function fmtVnd_(n) {
+  const x = Math.round(Number(n) || 0);
+  return (x < 0 ? '-' : '') + String(Math.abs(x)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' ₫';
+}
+
+function describeScenario_(sc, labels) {
+  const L = function (k) { return labels[Math.min(k, labels.length - 1)]; };
+  const dur = function (from, months) { return months === null ? 'từ tháng ' + L(from) + ' đến hết kỳ mô phỏng' : months + ' tháng từ tháng ' + L(from); };
+  const out = ['Mô phỏng ' + sc.months + ' tháng, từ ' + labels[0] + ' đến ' + labels[labels.length - 1] + (sc.summary ? ' · ' + sc.summary : '')];
+  if (sc.salaryChangePct) out.push('Lương hợp đồng ' + (sc.salaryChangePct > 0 ? 'tăng ' : 'giảm ') + Math.abs(sc.salaryChangePct) + '% từ tháng ' + L(sc.salaryFromOffset) + ' (thuế và bảo hiểm tính lại)');
+  if (sc.incomeStop) out.push('Không có lương trong ' + dur(sc.incomeStop.fromOffset, sc.incomeStop.months));
+  if (sc.spendChangePct) out.push('Chi tiêu hằng tháng ' + (sc.spendChangePct > 0 ? 'tăng ' : 'giảm ') + Math.abs(sc.spendChangePct) + '% từ tháng ' + L(sc.spendFromOffset));
+  sc.recurring.forEach(function (x) { out.push((x.amountPerMonth > 0 ? 'Thu thêm ' : 'Chi thêm ') + fmtVnd_(Math.abs(x.amountPerMonth)) + '/tháng' + (x.label ? ' (' + x.label + ')' : '') + ', ' + dur(x.fromOffset, x.months)); });
+  sc.oneOffs.forEach(function (x) { out.push((x.amount > 0 ? 'Nhận ' : 'Chi ') + fmtVnd_(Math.abs(x.amount)) + (x.label ? ' (' + x.label + ')' : '') + ' vào tháng ' + L(x.offset)); });
+  sc.newTermDeposits.forEach(function (x) { out.push('Gửi thêm sổ ' + fmtVnd_(x.amount) + ' vào tháng ' + L(x.offset) + ', kỳ hạn ' + x.termMonths + ' tháng, lãi ' + x.ratePct + '%/năm (lãi cuối kỳ)'); });
+  if (sc.renewMaturities) out.push('Các sổ tiết kiệm đáo hạn được tái tục: gốc không quay về tiền khả dụng (lãi vẫn nhận)');
+  return out;
+}
+
+/** Tổng ngân sách một tháng (cùng quy tắc "dòng có từ-tháng muộn hơn thắng" như trình duyệt) */
+function simBudgetTotal_(expenses, m) {
+  const out = {};
+  (expenses || []).filter(function (x) { return x.status !== 'paused' && (!x.from || String(x.from) <= m) && (!x.to || m <= String(x.to)); })
+    .sort(function (a, c) { return String(a.from || '').localeCompare(String(c.from || '')); })
+    .forEach(function (x) { out[String(x.name).trim().toLowerCase()] = Number(x.amount) || 0; });
+  return Object.keys(out).reduce(function (a, k) { return a + out[k]; }, 0);
+}
+
+/**
+ * Dòng tiền tiền khả dụng (số dư không kỳ hạn) theo tháng, từ tháng hiện tại đến N tháng sau.
+ * Thu: các khoản trong upcomingIncome_ (lương net, lãi sau thuế, gốc đáo hạn). Chi: chi tiêu cơ sở mỗi tháng.
+ * Trả về cả đường "giữ nguyên" và đường "theo kịch bản" để so sánh.
+ */
+function simulate_(b, sc) {
+  const N = sc.months, today = b.today, curM = today.slice(0, 7), cfg = b.config;
+  const monthOf = function (k) { return fmtDate_(addMonths_(parseDate_(curM + '-01'), k)).slice(0, 7); };
+  const labels = [], idx = {};
+  for (let k = 0; k <= N; k++) { labels.push(monthOf(k)); idx[labels[k]] = k; }
+
+  const active = b.savings.filter(function (s) { return s.status !== 'closed'; });
+  const inc = upcomingIncome_(active, b.salary, today, cfg, (N + 1) * 31 + 1);
+  const periods = readAll_('period');
+  const byMonth = {};
+  b.salary.forEach(function (s) { byMonth[s.month] = s; });
+  const latest = b.salary.filter(function (s) { return String(s.month) <= curM; })[0] || b.salary[0] || null;
+  const tr = Number(cfg.savingsTaxRate), taxRate = isNaN(tr) ? 5 : tr, keep = 1 - taxRate / 100;
+
+  // Chi tiêu cơ sở/tháng: trung bình thực chi 3 tháng gần nhất có dữ liệu, không có thì dùng ngân sách tháng này (giống thẻ Chi tiêu)
+  const spendIn = function (m) { return (b.spends || []).filter(function (r) { return r.month === m; }); };
+  let sumA = 0, cnt = 0;
+  for (let i = 1; i <= 3; i++) {
+    const rows = spendIn(monthOf(-i));
+    if (rows.length) { sumA += rows.reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0); cnt++; }
+  }
+  const avgA = cnt ? sumA / cnt : 0, budgetNow = simBudgetTotal_(b.expenses, curM);
+  const S0 = cnt && avgA > 0 ? avgA : budgetNow;
+  const basisText = cnt && avgA > 0 ? 'trung bình thực chi ' + cnt + ' tháng gần nhất' : (budgetNow > 0 ? 'theo ngân sách tháng này' : 'chưa có dữ liệu chi tiêu');
+  // Tháng hiện tại chỉ còn phần chưa chi: có số thực chi đã nhập thì lấy cơ sở trừ đi, không thì theo số ngày còn lại
+  const curActual = spendIn(curM).reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0);
+  const dim = new Date(Date.UTC(Number(curM.slice(0, 4)), Number(curM.slice(5, 7)), 0)).getUTCDate();
+  const dayNow = Number(today.slice(8, 10));
+  const remaining0 = curActual > 0 ? Math.max(0, S0 - curActual) : S0 * (dim - dayNow) / dim;
+
+  const zeros = function () { const a = []; for (let k = 0; k <= N; k++) a.push(0); return a; };
+  const flowB = zeros(), flowS = zeros(), spendB = zeros(), spendS = zeros(), adj = zeros();
+  let renewed = 0, locked = 0;
+
+  const stopped = function (k) {
+    const st = sc.incomeStop;
+    return !!st && k >= st.fromOffset && (st.months === null || k < st.fromOffset + st.months);
+  };
+  const salaryNet = function (e, k) {
+    if (stopped(k)) return 0;
+    if (sc.salaryChangePct !== 0 && k >= sc.salaryFromOffset) {
+      const rec = byMonth[e.month] || latest;
+      if (!rec) return e.net;
+      const c = JSON.parse(JSON.stringify(rec)); delete c.calc;
+      const f = 1 + sc.salaryChangePct / 100;
+      c.base = (Number(c.base) || 0) * f;
+      if (Number(c.insBase) > 0) c.insBase = Number(c.insBase) * f;
+      if (e.estimated) c.bonus = 0;
+      c.month = e.month;
+      return calcSalary_(c, cfgFor_(cfg, periods, e.month)).net;
+    }
+    return e.net;
+  };
+  inc.events.forEach(function (e) {
+    const k = idx[String(e.date).slice(0, 7)];
+    if (k === undefined) return;
+    const amt = e.kind === 'salary' ? e.net : (e.interest + e.principal);
+    flowB[k] += amt;
+    if (e.kind === 'salary') flowS[k] += salaryNet(e, k);
+    else if (e.kind === 'maturity' && sc.renewMaturities) { flowS[k] += e.interest; renewed += e.principal; }
+    else flowS[k] += amt;
+  });
+  for (let k = 0; k <= N; k++) {
+    spendB[k] = k === 0 ? remaining0 : S0;
+    spendS[k] = spendB[k] * (k >= sc.spendFromOffset ? 1 + sc.spendChangePct / 100 : 1);
+  }
+  sc.recurring.forEach(function (x) {
+    for (let k = x.fromOffset; k <= N; k++) {
+      if (x.months !== null && k >= x.fromOffset + x.months) break;
+      adj[k] += x.amountPerMonth;
+    }
+  });
+  sc.oneOffs.forEach(function (x) { adj[x.offset] += x.amount; });
+  sc.newTermDeposits.forEach(function (d) {
+    adj[d.offset] -= d.amount;
+    const back = d.offset + d.termMonths;
+    if (back <= N) adj[back] += d.amount + d.amount * d.ratePct / 100 * d.termMonths / 12 * keep;
+    else locked += d.amount;
+  });
+
+  const startCash = Number(b.dashboard.demandBalance) || 0;
+  let cb = startCash, cs = startCash;
+  const base = [], scn = [];
+  for (let k = 0; k <= N; k++) {
+    cb += flowB[k] - spendB[k];
+    cs += flowS[k] - spendS[k] + adj[k];
+    base.push(Math.round(cb)); scn.push(Math.round(cs));
+  }
+  const minOf = function (a) {
+    let mi = 0;
+    a.forEach(function (v, i) { if (v < a[mi]) mi = i; });
+    return { value: a[mi], month: labels[mi] };
+  };
+  const firstNeg = function (a) { const i = a.findIndex(function (v) { return v < 0; }); return i >= 0 ? labels[i] : null; };
+  const assumptions = [
+    'Tiền khả dụng = số dư các tài khoản không kỳ hạn hiện tại (' + fmtVnd_(startCash) + '), không tính lãi của loại này',
+    'Thu vào: lương net (tháng chưa nhập được ước tính theo tháng gần nhất, không gồm thưởng), lãi tiết kiệm sau thuế ' + taxRate + '%, gốc hoàn lại khi sổ đáo hạn',
+    'Chi tiêu cơ sở ' + fmtVnd_(S0) + '/tháng (' + basisText + '); tháng hiện tại chỉ tính phần còn lại',
+    'Danh mục đầu tư giữ nguyên, không tính lãi/lỗ; không có nợ hay khoản chi khác ngoài những gì ứng dụng đang có'
+  ];
+  if (!(S0 > 0)) assumptions.push('Chưa có dữ liệu chi tiêu nên coi chi tiêu = 0, kết quả sẽ lạc quan. Hãy nhập ngân sách/thực chi ở tab Chi tiêu');
+  return {
+    months: labels, base: base, scn: scn, assumptions: assumptions,
+    stats: { startCash: Math.round(startCash), endBase: base[N], endScn: scn[N], diffEnd: scn[N] - base[N],
+             minScn: minOf(scn), minBase: minOf(base), firstNegScn: firstNeg(scn), firstNegBase: firstNeg(base),
+             monthlySpend: Math.round(S0), tienKhoaThem: Math.round(locked + renewed) }
+  };
+}
+
+function aiSimulate_(p) {
+  const cfg = aiConfig_();
+  if (!cfg.key) throw new Error('Chưa cấu hình khóa API. Xem mục "Phân tích bằng AI" trong README (Cài đặt dự án → Thuộc tính tập lệnh).');
+  const text = String(p && p.text || '').trim();
+  if (!text) throw new Error('Hãy mô tả tình huống bạn muốn mô phỏng');
+  if (text.length > 600) throw new Error('Mô tả quá dài (tối đa 600 ký tự)');
+  const cache = CacheService.getUserCache();
+  if (cache.get('AI_SIM_BUSY')) throw new Error('Vừa chạy mô phỏng xong, hãy đợi khoảng 15 giây rồi thử lại');
+  cache.put('AI_SIM_BUSY', '1', 15);
+  try {
+    const raw = extractJson_(aiCall_(cfg, aiSimParseSystem_(today_()), text, { json: true }));
+    const sc = simSanitize_(raw);
+    const b = bootstrap_();
+    const result = simulate_(b, sc);
+    const assumptions = describeScenario_(sc, result.months);
+    const payload = {
+      cau_hoi_goc: text,
+      gia_dinh_da_ap_dung: assumptions,
+      gia_dinh_co_dinh: result.assumptions,
+      ket_qua: {
+        thang: result.months, tien_kha_dung_giu_nguyen: result.base, tien_kha_dung_theo_kich_ban: result.scn,
+        hien_tai: result.stats.startCash, cuoi_ky_giu_nguyen: result.stats.endBase, cuoi_ky_theo_kich_ban: result.stats.endScn,
+        thap_nhat_theo_kich_ban: result.stats.minScn, thap_nhat_giu_nguyen: result.stats.minBase,
+        thang_dau_tien_am_theo_kich_ban: result.stats.firstNegScn, thang_dau_tien_am_giu_nguyen: result.stats.firstNegBase,
+        chi_tieu_co_so_moi_thang: result.stats.monthlySpend, tien_khoa_them: result.stats.tienKhoaThem
+      }
+    };
+    const explain = aiCall_(cfg, AI_SIM_EXPLAIN, JSON.stringify(payload));
+    return { text: explain, scenario: sc, assumptions: assumptions, result: result, provider: cfg.provider, model: cfg.model };
+  } catch (e) {
+    cache.remove('AI_SIM_BUSY');
+    throw e;
   }
 }

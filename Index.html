@@ -141,6 +141,12 @@
   input.chg{border-color:var(--warn);background:#fffbeb}
   #cdlg{width:min(400px,92vw)}
   #cdlg p{margin:0 0 4px;color:var(--ink)}
+  .incd summary{list-style:none;cursor:pointer}
+  .incd summary::-webkit-details-marker{display:none}
+  .incd .car{display:inline-block;transition:transform .15s;color:var(--mute)}
+  .incd[open] .car{transform:rotate(90deg)}
+  .incd .incs{padding:2px 0 8px 18px;background:#fafafa}
+  .incd .incs .kv{font-size:13px}
   .cb{position:relative}
   .cb input{padding-right:36px}
   .cbtn{position:absolute;right:4px;top:4px;bottom:4px;width:30px;border:0;background:none;color:var(--mute);cursor:pointer;font-size:14px;border-radius:6px}
@@ -154,7 +160,7 @@
 </head>
 <body>
 <header><div class="bar">
-  <h1>💰 Tài chính cá nhân <small style="font-size:10px;color:#9ca3af;font-weight:400">bản 11/11 combobox</small></h1>
+  <h1>💰 Tài chính cá nhân</h1>
   <nav id="nav">
     <button data-t="dash" class="on">Tổng quan</button>
     <button data-t="sav">Tiết kiệm</button>
@@ -223,7 +229,7 @@ function askConfirm(msg, yesLabel, title){
 function busy(btns, label, promise){
   btns = [].concat(btns).filter(Boolean);
   var old = btns.map(function(b){ return b.innerHTML; });
-  btns.forEach(function(b, i){ b.disabled = true; if (i === 0 && label) b.innerHTML = '<span class="spamt"></span>' + label; });
+  btns.forEach(function(b, i){ b.disabled = true; if (i === 0 && label) b.innerHTML = '<span class="spin"></span>' + label; });
   var restore = function(){ btns.forEach(function(b, i){ b.disabled = false; b.innerHTML = old[i]; }); };
   return promise.then(function(v){ restore(); return v; }, function(e){ restore(); throw e; });
 }
@@ -552,6 +558,81 @@ function runAi(btn){
     drawAi();
   }).catch(function(e){ bad(e.message); });
 }
+// ---- Mô phỏng "nếu…" (AI hiểu câu mô tả, app tính dòng tiền, AI diễn giải) ----
+var SIM = { text: '', busy: false, res: null };
+var SIM_EG = ['Nếu tôi nghỉ việc 6 tháng, tiền không kỳ hạn của tôi chịu được bao lâu?',
+  'Nếu tháng sau tôi được tăng lương 20% thì sau 12 tháng tôi có thêm bao nhiêu tiền?',
+  'Nếu 3 tháng nữa tôi chi 300 triệu mua xe thì sao?',
+  'Nếu tháng sau gửi thêm 200 triệu vào sổ 12 tháng lãi 5,5% thì sao?'];
+function simChart(r){
+  var W = 760, H = 260, L = 54, R = 14, T = 16, B = 28, pw = W - L - R, ph = H - T - B, n = r.months.length;
+  var all = r.base.concat(r.scn), mn = Math.min.apply(null, all), mx = Math.max.apply(null, all);
+  var hi = mx > 0 ? niceMax(mx * 1.08) : 0, lo = mn < 0 ? -niceMax(-mn * 1.08) : 0;
+  if (hi === lo) hi = lo + 1;
+  function X(i){ return n > 1 ? L + pw * i / (n - 1) : L + pw / 2; }
+  function Y(v){ return T + ph - (v - lo) / (hi - lo) * ph; }
+  function path(a){ return a.map(function(v, i){ return (i ? 'L' : 'M') + X(i) + ' ' + Y(v); }).join(''); }
+  var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;overflow:visible" role="img" aria-label="Tiền khả dụng theo tháng: giữ nguyên so với kịch bản">';
+  for (var t = 0; t <= 4; t++){
+    var v = lo + (hi - lo) * t / 4, y = Y(v);
+    svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" stroke="#e5e7eb"/><text x="' + (L - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="#6b7280">' + trFmt(v) + '</text>';
+  }
+  if (lo < 0) svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(0) + '" y2="' + Y(0) + '" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="4 3"/>';
+  svg += '<path d="' + path(r.base) + '" fill="none" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 4" stroke-linejoin="round"/>';
+  svg += '<path d="' + path(r.scn) + '" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
+  var neg = -1; r.scn.forEach(function(v2, i){ if (neg < 0 && v2 < 0) neg = i; });
+  if (neg >= 0) svg += '<circle cx="' + X(neg) + '" cy="' + Y(r.scn[neg]) + '" r="5" fill="#dc2626" stroke="#fff" stroke-width="2"/>';
+  var every = Math.max(1, Math.ceil(n / 12));
+  r.months.forEach(function(m, i){
+    if (i % every === 0 || i === n - 1) svg += '<text x="' + X(i) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="#6b7280">' + esc(m.slice(5) + '/' + m.slice(2, 4)) + '</text>';
+    var w = n > 1 ? pw / (n - 1) : pw;
+    svg += '<rect x="' + (X(i) - w / 2) + '" y="' + T + '" width="' + w + '" height="' + ph + '" fill="transparent"><title>' + esc(m) + '&#10;Giữ nguyên: ' + vnd(r.base[i]) + '&#10;Kịch bản: ' + vnd(r.scn[i]) + '</title></rect>';
+  });
+  return '<div class="legend" style="margin:8px 0 4px"><span><i class="dot" style="background:#6b7280"></i> Giữ nguyên như hiện tại</span> <span><i class="dot" style="background:#2563eb"></i> Theo kịch bản</span>' +
+    (lo < 0 ? ' <span><i class="dot" style="background:#dc2626"></i> Chạm mức âm</span>' : '') + '</div>' + svg + '</svg>';
+}
+function drawSim(){
+  var box = $('simBox'); if (!box) return;
+  var ready = !!(S && S.aiReady), R = SIM.res;
+  var h = '<h3>Mô phỏng "nếu…" (AI)</h3>' +
+    '<div class="sub" style="margin-bottom:10px">Mô tả một tình huống bằng lời. AI chuyển thành các giả định, app tự tính lại dòng tiền (lương, lãi, đáo hạn, chi tiêu) cho tiền khả dụng, rồi AI diễn giải. Con số do app tính, AI không tự bịa số.</div>';
+  if (!ready) h += '<div class="note">Chưa cấu hình khóa API nên chưa dùng được. Xem mục "Phân tích bằng AI" trong README.</div>';
+  if (!R && ready) h += '<div class="chips">' + SIM_EG.map(function(q, i){ return '<button type="button" data-sq="' + i + '">' + esc(q) + '</button>'; }).join('') + '</div>';
+  h += '<div class="chatform"><textarea id="simIn" rows="2" maxlength="600" placeholder="VD: nếu tôi nghỉ việc 6 tháng... (Enter để chạy, Shift+Enter xuống dòng)"' + (ready ? '' : ' disabled') + '>' + esc(SIM.text) + '</textarea>' +
+    '<button class="btn" id="simGo" type="button"' + (ready && !SIM.busy ? '' : ' disabled') + '>' + (SIM.busy ? 'Đang tính...' : 'Mô phỏng') + '</button></div>';
+  if (SIM.busy) h += '<div class="chat"><div class="msg a typing"><span class="sub">Đang hiểu kịch bản và tính toán<span class="dots"></span></span></div></div>';
+  if (R && !SIM.busy){
+    var st = R.result.stats, d = st.diffEnd;
+    h += '<div style="margin-top:14px"><div class="sub" style="margin-bottom:6px">Kịch bản: <b>' + esc(R.question) + '</b></div>' +
+      '<div class="sc-stats">' +
+      '<div><div class="sub">Tiền khả dụng hiện tại</div><div class="v">' + vnd(st.startCash) + '</div></div>' +
+      '<div><div class="sub">Cuối kỳ, giữ nguyên (' + esc(R.result.months[R.result.months.length - 1]) + ')</div><div class="v">' + vnd(st.endBase) + '</div></div>' +
+      '<div><div class="sub">Cuối kỳ, theo kịch bản</div><div class="v ' + cls(st.endScn) + '">' + vnd(st.endScn) + '</div><div class="sub ' + cls(d) + '">' + (d >= 0 ? '+' : '-') + vnd(Math.abs(d)) + ' so với giữ nguyên</div></div>' +
+      '<div><div class="sub">Thấp nhất theo kịch bản</div><div class="v ' + cls(st.minScn.value) + '">' + vnd(st.minScn.value) + '</div><div class="sub">tháng ' + esc(st.minScn.month) + '</div></div></div>';
+    if (st.firstNegScn) h += '<div class="note" style="background:#fef2f2;border-color:#fecaca;color:#7f1d1d">Theo kịch bản này, tiền khả dụng chạm mức âm từ tháng <b>' + esc(st.firstNegScn) + '</b>' + (st.firstNegBase ? '' : ' (trong khi nếu giữ nguyên thì không)') + '.</div>';
+    h += simChart(R.result);
+    h += '<div class="aitext" style="margin-top:12px">' + mdLite(R.text) + '</div>' +
+      '<details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Giả định đã dùng (kiểm tra AI có hiểu đúng ý bạn không)</summary><ul class="aitext">' +
+      R.assumptions.map(function(a){ return '<li><b>' + esc(a) + '</b></li>'; }).join('') + R.result.assumptions.map(function(a){ return '<li>' + esc(a) + '</li>'; }).join('') + '</ul></details>' +
+      '<div class="sub" style="margin-top:8px">Mô phỏng ' + esc(R.provider) + ' / ' + esc(R.model) + '. Chỉ mang tính tham khảo, không phải tư vấn tài chính chuyên nghiệp.</div></div>';
+  }
+  box.innerHTML = h;
+  var inp = $('simIn');
+  inp.oninput = function(){ SIM.text = inp.value; };
+  inp.onkeydown = function(e){ if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229){ e.preventDefault(); runSim(); } };
+  $('simGo').onclick = function(){ runSim(); };
+  [].forEach.call(box.querySelectorAll('[data-sq]'), function(b){ b.onclick = function(){ SIM.text = SIM_EG[Number(b.getAttribute('data-sq'))]; runSim(); }; });
+}
+function runSim(){
+  var text = String(SIM.text || '').trim();
+  if (!text || SIM.busy || !(S && S.aiReady)) return;
+  if (text.length > 600){ bad('Mô tả quá dài (tối đa 600 ký tự)'); return; }
+  SIM.busy = true; drawSim();
+  call('aiSimulate', {text: text}).then(function(r){
+    r.question = text; SIM.res = r;
+  }).catch(function(e){ bad(e.message); }).then(function(){ SIM.busy = false; drawSim(); });
+}
+
 function demandSub(d){
   var a = d.demandAccounts || [];
   if (!a.length) return 'Chưa có tài khoản - thêm ở tab Tiết kiệm';
@@ -578,28 +659,13 @@ function rDash(){
     parts.map(function(p){ return '<span><i class="dot" style="background:' + p[2] + '"></i>' + esc(p[0]) + ': ' + vnd(p[1]) + ' (' + (p[1] / tot * 100).toFixed(1) + '%)</span>'; }).join('') + '</div></div>';
   h += '<div class="card" id="aiBox" style="margin-bottom:16px"></div>';
   h += '<div class="card" id="chatBox" style="margin-bottom:16px"></div>';
-  var np = d.nextSavingsPayout;
-  h += '<div class="grid"><div class="card"><h3>Lãi tiết kiệm sắp nhận (sau thuế ' + (np ? num(np.taxRate) : 5) + '%)</h3>';
-  if (!np) h += '<div class="sub">Không có sổ có kỳ hạn nào còn hiệu lực.</div>';
-  else {
-    h += '<div class="big">' + vnd(np.net) + '</div><div class="sub">Ngày <b>' + esc(np.date) + '</b> · ' + (np.days <= 0 ? 'hôm nay' : 'còn ' + np.days + ' ngày') + ' · trước thuế ' + vnd(np.gross) + '</div>';
-    if (np.principal > 0) h += '<div class="sub">Cùng ngày đáo hạn, nhận lại gốc ' + vnd(np.principal) + ' (không tính thuế)</div>';
-    h += '<div style="margin-top:8px">' + np.items.map(function(it){
-      return '<div class="kv"><span>' + esc(it.name) + ' <span class="sub">' + (it.type === 'TERM_END' ? 'cuối kỳ' : 'hàng tháng') + '</span></span><span>' + vnd(it.net) + '</span></div>';
-    }).join('') + '</div>';
-    if (np.following && np.following.length) h += '<div class="sub" style="margin-top:8px">Các kỳ tiếp theo: ' + np.following.map(function(f){ return esc(f.date) + ' (' + vnd(f.net) + ')'; }).join(' · ') + '</div>';
-  }
-  h += '</div></div>';
+  h += '<div class="card" id="simBox" style="margin-bottom:16px"></div>';
+  h += incomingCard();
   h += '<div class="grid">';
-  if (d.latestSalary) h += card('Lương net tháng ' + esc(d.latestSalary.month), vnd(d.latestSalary.net), 'Gross ' + vnd(d.latestSalary.gross) + ' · thuế ' + vnd(d.latestSalary.tax));
   h += card('Lương lũy kế năm ' + S.today.slice(0,4) + ' (đến tháng ' + S.today.slice(5,7) + ')', vnd(d.ytd.net) + ' net',
     'Gross ' + vnd(d.ytd.gross) + ' · BH ' + vnd(d.ytd.ins) + ' · thuế ' + vnd(d.ytd.tax) +
     (d.yearPlan.future > 0 ? '<br>Dự kiến cả năm (thêm ' + d.yearPlan.future + ' tháng chưa tới): ' + vnd(d.yearPlan.net) + ' net' : ''));
-  h += '</div>';
-  h += '<div class="grid"><div class="card"><h3>Sắp đáo hạn / đến kỳ (60 ngày)</h3>';
-  if (!d.upcoming.length) h += '<div class="sub">Không có sổ nào sắp đáo hạn.</div>';
-  else h += d.upcoming.map(function(u){ return '<div class="kv"><span>' + esc(u.name) + ' <span class="sub">' + esc(u.maturityDate) + '</span></span><span class="' + (u.days <= 0 ? 'warn' : '') + '">' + (u.days <= 0 ? 'Đã đến hạn' : 'còn ' + u.days + ' ngày') + ' · ' + vnd(u.amount) + '</span></div>'; }).join('');
-  h += '</div><div class="card"><h3>Lương 12 tháng gần nhất</h3>';
+  h += '<div class="card"><h3>Lương 12 tháng gần nhất</h3>';
   if (!d.salarySeries.length) h += '<div class="sub">Chưa có dữ liệu lương.</div>';
   else {
     var mx = Math.max.apply(null, d.salarySeries.map(function(s){ return s.net + s.tax + s.ins; })) || 1;
@@ -612,6 +678,97 @@ function rDash(){
   $('t-dash').innerHTML = h;
   drawAi();
   drawChat();
+  drawSim();
+  drawIncoming();
+}
+// Ô gộp: tiền sắp nhận (lương net + lãi tiết kiệm sau thuế + gốc hoàn lại khi đáo hạn)
+// Người dùng chọn: trong vòng N ngày, hoặc đến hết một ngày cụ thể. Server gửi sẵn các khoản trong 365 ngày, lọc ở trình duyệt.
+var INC = {mode: 'days', days: 30, date: ''};
+function isoPlus(n){ return new Date(Date.parse(S.today) + n * 86400000).toISOString().slice(0, 10); }
+function incLimit(){
+  var max = S.dashboard.incoming.horizon, n;
+  if (INC.mode === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(INC.date)) n = Math.round((Date.parse(INC.date) - Date.parse(S.today)) / 86400000);
+  else n = Number(INC.days);
+  if (isNaN(n)) n = 60;
+  return Math.max(0, Math.min(max, Math.floor(n)));
+}
+function incomingCard(){
+  return '<div class="card" style="margin-bottom:16px" id="incBox"></div>';
+}
+function drawIncoming(){
+  var box = $('incBox'); if (!box) return;
+  var inc = S.dashboard.incoming, max = inc.horizon;
+  var h = '<div class="row" style="margin:0 0 8px"><h3 id="incTitle" style="margin:0"></h3><div class="seg">' +
+    '<button type="button" data-im="days" class="' + (INC.mode === 'days' ? 'on' : '') + '">Trong vòng … ngày</button>' +
+    '<button type="button" data-im="date" class="' + (INC.mode === 'date' ? 'on' : '') + '">Đến ngày cụ thể</button></div></div>';
+  h += '<div class="pl" style="margin:0 0 6px">';
+  if (INC.mode === 'date')
+    h += '<div style="flex:0 1 220px"><label>Nhận từ hôm nay đến hết ngày</label><input type="date" id="incDate" min="' + esc(S.today) + '" max="' + esc(isoPlus(max)) + '" value="' + esc(INC.date) + '"></div>';
+  else
+    h += '<div style="flex:0 1 160px"><label>Số ngày tới (1-' + max + ')</label><input type="number" id="incDays" min="1" max="' + max + '" step="1" value="' + esc(INC.days) + '"></div>' +
+      '<div style="flex:1 1 auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' + [30, 60, 90, 180, 365].map(function(d){
+        return '<button type="button" class="btn ghost" data-id="' + d + '" style="padding:6px 10px">' + d + ' ngày</button>'; }).join('') + '</div>';
+  h += '</div><div id="incBody"></div>';
+  box.innerHTML = h;
+  [].forEach.call(box.querySelectorAll('[data-im]'), function(b){
+    b.onclick = function(){
+      var m = b.getAttribute('data-im'); if (m === INC.mode) return;
+      INC.mode = m;
+      if (m === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(INC.date)) INC.date = isoPlus(incLimit());
+      if (m === 'days') INC.days = Math.max(1, incLimit());
+      drawIncoming();
+    };
+  });
+  [].forEach.call(box.querySelectorAll('[data-id]'), function(b){
+    b.onclick = function(){ INC.days = Number(b.getAttribute('data-id')); $('incDays').value = INC.days; drawIncomingBody(); };
+  });
+  var di = $('incDays'); if (di) di.oninput = function(){ INC.days = this.value; drawIncomingBody(); };
+  var dd = $('incDate'); if (dd) dd.onchange = function(){ INC.date = this.value; drawIncomingBody(); };
+  drawIncomingBody();
+}
+function drawIncomingBody(){
+  var box = $('incBody'); if (!box) return;
+  var inc = S.dashboard.incoming, n = incLimit(), until = isoPlus(n);
+  var ev = inc.events.filter(function(e){ return e.days <= n; });
+  var title = INC.mode === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(INC.date) ? 'Tiền sắp nhận đến hết ngày ' + INC.date : 'Tiền sắp nhận trong ' + n + ' ngày tới';
+  $('incTitle').textContent = title;
+  if (!ev.length){ box.innerHTML = '<div class="sub">Không có khoản nào sắp nhận trong khoảng này (cần có sổ có kỳ hạn hoặc dữ liệu lương).</div>'; return; }
+  var T = {salary: 0, interest: 0, principal: 0};
+  ev.forEach(function(e){ if (e.kind === 'salary') T.salary += e.net; else { T.interest += e.interest; T.principal += e.principal; } });
+  var all = T.salary + T.interest + T.principal;
+  var h = '<div class="big">' + vnd(all) + '</div><div class="sub">Từ hôm nay đến ' + esc(until) + ' (' + n + ' ngày) · ' + ev.length + ' khoản</div>' +
+    '<div class="sc-stats" style="margin:12px 0">' +
+    '<div><div class="sub">Lương net</div><div class="v">' + vnd(T.salary) + '</div></div>' +
+    '<div><div class="sub">Lãi tiết kiệm (sau thuế ' + num(inc.taxRate) + '%)</div><div class="v">' + vnd(T.interest) + '</div></div>' +
+    '<div><div class="sub">Gốc hoàn lại khi đáo hạn</div><div class="v">' + vnd(T.principal) + '</div></div></div>';
+  // Gom các khoản trùng ngày thành một hàng; bấm vào hàng để xem chi tiết từng khoản
+  var groups = [], byDate = {};
+  ev.forEach(function(e){
+    if (!byDate[e.date]){ byDate[e.date] = {date: e.date, days: e.days, items: [], amt: 0}; groups.push(byDate[e.date]); }
+    var g = byDate[e.date];
+    g.items.push(e);
+    g.amt += e.kind === 'salary' ? e.net : e.principal + e.interest;
+  });
+  function itemLabel(e){
+    if (e.kind === 'salary') return 'Lương tháng ' + esc(e.month) + ' (net)' + (e.estimated ? ' <span class="badge o" title="Chưa nhập lương tháng này, ước tính theo lương tháng gần nhất không gồm thưởng">ước tính</span>' : '');
+    if (e.kind === 'maturity') return esc(e.name) + ' <span class="sub">đáo hạn: gốc ' + vnd(e.principal) + ' + lãi ' + vnd(e.interest) + '</span>';
+    return esc(e.name) + ' <span class="sub">lãi</span>';
+  }
+  function itemAmt(e){ return e.kind === 'salary' ? e.net : e.principal + e.interest; }
+  h += groups.map(function(g){
+    var when = g.days === 0 ? 'hôm nay' : 'còn ' + g.days + ' ngày';
+    var head = '<b>' + esc(g.date) + '</b> <span class="sub">' + when + '</span> · ';
+    if (g.items.length === 1)
+      return '<div class="kv"><span>' + head + itemLabel(g.items[0]) + '</span><span>' + vnd(g.amt) + '</span></div>';
+    var sal = g.items.filter(function(e){ return e.kind === 'salary'; }), itr = g.items.filter(function(e){ return e.kind === 'interest'; }), mat = g.items.filter(function(e){ return e.kind === 'maturity'; });
+    var parts = [];
+    if (sal.length) parts.push('Lương tháng ' + esc(sal[0].month) + ' (net)' + (sal[0].estimated ? ' <span class="badge o">ước tính</span>' : ''));
+    if (itr.length) parts.push('Lãi ' + itr.length + ' sổ');
+    if (mat.length) parts.push('Đáo hạn ' + mat.length + ' sổ (gốc + lãi)');
+    return '<details class="incd"><summary class="kv"><span><span class="car">▸</span> ' + head + parts.join(' + ') + ' <span class="sub">(' + g.items.length + ' khoản)</span></span><span>' + vnd(g.amt) + '</span></summary>' +
+      '<div class="incs">' + g.items.map(function(e){ return '<div class="kv"><span>' + itemLabel(e) + '</span><span>' + vnd(itemAmt(e)) + '</span></div>'; }).join('') + '</div></details>';
+  }).join('');
+  box.innerHTML = h + '<div class="sub" style="margin-top:8px">Lãi tiết kiệm đã trừ thuế khấu trừ, gốc không bị trừ. Lương nhận vào ngày cuối tháng (rơi vào thứ 7 / chủ nhật thì lùi về thứ 6, chưa xét ngày lễ). Xem được tối đa ' + inc.horizon + ' ngày.</div>';
 }
 function card(t, big, sub){ return '<div class="card"><h3>' + t + '</h3><div class="big">' + big + '</div><div class="sub">' + sub + '</div></div>'; }
 function acts(ent, key){ return '<button class="lnk" data-act="edit" data-ent="' + ent + '" data-key="' + esc(key) + '">Sửa</button><button class="lnk del" data-act="del" data-ent="' + ent + '" data-key="' + esc(key) + '">Xóa</button>'; }
@@ -621,6 +778,7 @@ var SAVV = { sort: '', dir: 'asc', q: '', type: '', status: '', page: 1 };
 var SAV_PAGE_SIZE = 10;
 // Thanh phân trang dùng chung: cur = trang hiện tại, total = tổng số trang
 function pagerHtml(cur, total, attr){
+  attr = attr || 'data-pg';
   if (total <= 1) return '';
   var pages = [], i;
   for (i = 1; i <= total; i++) if (i === 1 || i === total || Math.abs(i - cur) <= 1) pages.push(i);
@@ -1047,10 +1205,145 @@ function openBalance(id){
   $('dlg').showModal();
   $('bnew').focus();
 }
+// ---- Thang đáo hạn & lãi: tiền sẽ nhận từ các sổ có kỳ hạn theo tháng/ngày (gốc đáo hạn, lãi khi đáo hạn, lãi trả hàng tháng) ----
+var LAD = { range: 12, view: 'month', page: 1 };   // range: 12 / 24 tháng tới, 0 = tất cả (tối đa 60 tháng); view: month | day
+var LAD_PAGE = 10;
+function ladLabel(m){ return m.slice(5) + '/' + m.slice(2, 4); }
+function ladDM(d){ return d.slice(8, 10) + '/' + d.slice(5, 7); }
+function drawLadder(){
+  var box = $('savLadder'); if (!box) return;
+  var cur = S.today.slice(0, 7), lg = S.dashboard.ladder || { taxRate: 5, events: [] }, keep = 1 - (Number(lg.taxRate) || 0) / 100;
+  var items = termSavings().filter(function(s){ return s.status !== 'closed' && s.calc && s.calc.maturityDate; });
+  var h = '<div class="row" style="margin:0 0 8px"><h3 style="margin:0">Thang đáo hạn &amp; lãi nhận</h3><div class="seg">' +
+    [[12, '12 tháng'], [24, '24 tháng'], [0, 'Tất cả']].map(function(o){
+      return '<button type="button" data-lr="' + o[0] + '" class="' + (LAD.range === o[0] ? 'on' : '') + '">' + o[1] + '</button>';
+    }).join('') + '</div></div>';
+
+  if (!items.length){
+    h += '<div class="sub">Chưa có sổ có kỳ hạn đang gửi để vẽ thang đáo hạn.</div>';
+  } else {
+    var lastM = cur;
+    items.forEach(function(s){ var k = s.calc.maturityDate.slice(0, 7); if (k > lastM) lastM = k; });
+    var endM = LAD.range ? shiftMonth(cur, LAD.range - 1) : lastM;
+    if (endM > shiftMonth(cur, 59)) endM = shiftMonth(cur, 59);
+    if (endM < cur) endM = cur;
+    var keys = ['over'], bk = { over: mkSlot() };
+    for (var m = cur; m <= endM; m = shiftMonth(m, 1)){ keys.push(m); bk[m] = mkSlot(); }
+    var beyond = 0;
+    // Sổ đã đến hạn nhưng chưa tất toán
+    items.forEach(function(s){
+      if (!s.calc.matured) return;
+      var p = Number(s.principal) || 0, i = s.type === 'TERM_END' ? Math.round((Number(s.calc.totalInterest) || 0) * keep) : 0;
+      bk.over.p += p; bk.over.iE += i; bk.over.list.push({ name: s.name, date: s.calc.maturityDate, kind: 'over', p: p, i: i });
+    });
+    // Các khoản sẽ nhận (lãi đã trừ thuế khấu trừ, gốc hoàn lại khi đáo hạn)
+    lg.events.forEach(function(e){
+      var sl = bk[String(e.date).slice(0, 7)];
+      if (!sl){ if (e.kind === 'maturity') beyond++; return; }
+      var p = Number(e.principal) || 0, i = Number(e.interest) || 0;
+      if (e.kind === 'maturity'){ sl.p += p; sl.iE += i; } else sl.iM += i;
+      sl.list.push({ name: e.name, date: e.date, kind: e.kind, p: p, i: i });
+    });
+    if (!bk.over.list.length) keys.shift();
+    keys.forEach(function(k){ bk[k].list.sort(function(a, b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }); });
+
+    // Gom theo ngày để biết ngày nào chỉ nhận lãi
+    var dayMap = {}, days = [];
+    keys.forEach(function(k){
+      bk[k].list.forEach(function(x){
+        var dk = (k === 'over' ? 'over|' : '') + x.date, d = dayMap[dk];
+        if (!d){ d = dayMap[dk] = { date: x.date, over: k === 'over', p: 0, i: 0, list: [] }; days.push(d); }
+        d.p += x.p; d.i += x.i; d.list.push(x);
+      });
+    });
+    days.sort(function(a, b){ return (a.over === b.over ? 0 : a.over ? -1 : 1) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+    var interestOnlyDays = days.filter(function(d){ return !d.over && d.p === 0 && d.i > 0; }).length;
+
+    var sumP = 0, sumI = 0, peak = null;
+    keys.forEach(function(k){
+      var t = bk[k].p + bk[k].iE + bk[k].iM; sumP += bk[k].p; sumI += bk[k].iE + bk[k].iM;
+      if (t > 0 && (!peak || t > bk[peak].p + bk[peak].iE + bk[peak].iM)) peak = k;
+    });
+    var peakT = peak ? bk[peak].p + bk[peak].iE + bk[peak].iM : 0;
+    h += '<div class="sc-stats">' +
+      '<div><div class="sub">Tổng sẽ nhận trong khoảng này</div><div class="v">' + vnd(sumP + sumI) + '</div><div class="sub">Gốc ' + vnd(sumP) + '</div></div>' +
+      '<div><div class="sub">Trong đó tiền lãi (sau thuế ' + num(lg.taxRate) + '%)</div><div class="v pos">' + vnd(sumI) + '</div></div>' +
+      '<div><div class="sub">Số ngày chỉ nhận lãi (không có gốc)</div><div class="v">' + interestOnlyDays + '</div></div>' +
+      '<div><div class="sub">Tháng nhận nhiều nhất</div><div class="v">' + (peak ? (peak === 'over' ? 'Đã đến hạn' : esc(ladLabel(peak))) : '—') + '</div>' +
+        (peak ? '<div class="sub">' + vnd(peakT) + '</div>' : '') + '</div></div>';
+
+    var mx = 0; keys.forEach(function(k){ mx = Math.max(mx, bk[k].p + bk[k].iE + bk[k].iM); });
+    if (!(mx > 0)){
+      h += '<div class="empty">Không có khoản nào sắp nhận trong khoảng này. Chọn "Tất cả" để xem xa hơn.</div>';
+    } else {
+      var W = 760, H = 250, L = 46, R = 10, T = 18, B = 28, pw = W - L - R, ph = H - T - B, n = keys.length, slot = pw / n, bw = Math.min(34, slot * 0.62);
+      var topV = niceMax(mx * 1.12), Y = function(v){ return T + ph - v / topV * ph; };
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;overflow:visible" role="img" aria-label="Biểu đồ tiền nhận từ sổ tiết kiệm theo tháng: gốc đáo hạn, lãi khi đáo hạn, lãi hàng tháng">';
+      for (var t = 0; t <= 4; t++){
+        var v = topV * t / 4, y = Y(v);
+        svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" stroke="#e5e7eb"/><text x="' + (L - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="#6b7280">' + trFmt(v) + '</text>';
+      }
+      var every = Math.max(1, Math.ceil(n / 14));
+      keys.forEach(function(k, idx){
+        var d = bk[k], cx = L + slot * (idx + 0.5), x = cx - bw / 2, over = k === 'over', acc = 0;
+        [[d.p, over ? '#d97706' : '#2563eb'], [d.iE, over ? '#fbbf24' : '#93c5fd'], [d.iM, '#34d399']].forEach(function(sg){
+          if (!(sg[0] > 0)) return;
+          var y1 = Y(acc), y0 = Y(acc + sg[0]);
+          svg += '<rect x="' + x + '" y="' + y0 + '" width="' + bw + '" height="' + (y1 - y0) + '" fill="' + sg[1] + '" stroke="#fff" stroke-width="1"/>';
+          acc += sg[0];
+        });
+        if (acc > 0) svg += '<text x="' + cx + '" y="' + (Y(acc) - 6) + '" text-anchor="middle" font-size="10.5" font-weight="600" fill="#374151">' + trFmt(acc) + '</text>';
+        if (idx % every === 0 || idx === n - 1) svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="#6b7280">' + (over ? 'Đến hạn' : esc(ladLabel(k))) + '</text>';
+        var tt = (over ? 'Đã đến hạn, chưa tất toán' : 'Tháng ' + k) + (d.list.length ? '&#10;' + d.list.map(function(x2){
+          return esc(x2.name) + ' (' + esc(ladDM(x2.date)) + '): ' + (x2.p ? 'gốc ' + vnd(x2.p) + (x2.i ? ' + lãi ' + vnd(x2.i) : '') : 'lãi ' + vnd(x2.i));
+        }).join('&#10;') : '&#10;Không có khoản nào');
+        svg += '<rect x="' + (cx - slot / 2) + '" y="' + T + '" width="' + slot + '" height="' + ph + '" fill="transparent"><title>' + tt + '</title></rect>';
+      });
+      h += '<div class="legend" style="margin:4px 0 6px"><span><i class="dot" style="background:#2563eb"></i> Gốc đáo hạn</span> <span><i class="dot" style="background:#93c5fd"></i> Lãi nhận khi đáo hạn</span> <span><i class="dot" style="background:#34d399"></i> Lãi trả hàng tháng</span>' +
+        (bk.over && bk.over.list.length ? ' <span><i class="dot" style="background:#d97706"></i> Đã đến hạn, chưa tất toán</span>' : '') + '</div>' + svg + '</svg>';
+
+      h += '<div class="row" style="margin:14px 0 8px"><h3 style="margin:0">Chi tiết</h3><div class="seg"><button type="button" data-lv="month" class="' + (LAD.view === 'month' ? 'on' : '') + '">Theo tháng</button><button type="button" data-lv="day" class="' + (LAD.view === 'day' ? 'on' : '') + '">Theo ngày</button></div></div>';
+      var tag = function(x){ return x.kind === 'interest' ? 'lãi' : 'đáo hạn'; };
+      var itemHtml = function(x, short){ return esc(x.name) + ' <span class="sub">' + (short ? '' : esc(ladDM(x.date)) + ' · ') + tag(x) + '</span>'; };
+      if (LAD.view === 'month'){
+        var rows = keys.filter(function(k){ return bk[k].list.length; });
+        h += '<div class="scroll"><table><thead><tr><th>Tháng</th><th>Các khoản</th><th class="n">Gốc</th><th class="n">Lãi</th><th class="n">Tổng nhận</th></tr></thead><tbody>' + rows.map(function(k){
+          var d = bk[k], li = d.iE + d.iM;
+          return '<tr><td><b>' + (k === 'over' ? 'Đã đến hạn' : esc(k)) + '</b></td><td style="white-space:normal;max-width:420px">' +
+            d.list.map(function(x){ return itemHtml(x, false); }).join(', ') + '</td><td class="n">' + (d.p ? vnd(d.p) : '—') + '</td><td class="n pos">' + (li ? vnd(li) : '—') + '</td><td class="n"><b>' + vnd(d.p + li) + '</b></td></tr>';
+        }).join('') + '</tbody></table></div>';
+      } else {
+        var pages = Math.max(1, Math.ceil(days.length / LAD_PAGE));
+        if (LAD.page > pages) LAD.page = pages; if (LAD.page < 1) LAD.page = 1;
+        var from = (LAD.page - 1) * LAD_PAGE, slice = days.slice(from, from + LAD_PAGE);
+        h += '<div class="scroll"><table><thead><tr><th>Ngày</th><th>Loại</th><th>Các khoản</th><th class="n">Gốc</th><th class="n">Lãi</th><th class="n">Tổng nhận</th></tr></thead><tbody>' + slice.map(function(d){
+          var kind = d.over ? '<span class="badge o">Đã đến hạn</span>' : (d.p > 0 ? '<span class="badge g">Đáo hạn</span>' : '<span class="badge">Chỉ nhận lãi</span>');
+          return '<tr><td><b>' + esc(d.date) + '</b></td><td>' + kind + '</td><td style="white-space:normal;max-width:380px">' + d.list.map(function(x){ return itemHtml(x, true); }).join(', ') +
+            '</td><td class="n">' + (d.p ? vnd(d.p) : '—') + '</td><td class="n pos">' + (d.i ? vnd(d.i) : '—') + '</td><td class="n"><b>' + vnd(d.p + d.i) + '</b></td></tr>';
+        }).join('') + '</tbody></table></div>' +
+          '<div class="sub" style="margin-top:6px">Ngày ' + (days.length ? from + 1 : 0) + '–' + (from + slice.length) + ' / ' + days.length + ' ngày có tiền về</div>' + pagerHtml(LAD.page, pages, 'data-lp');
+      }
+      h += '<div class="sub" style="margin-top:6px">Lãi đã trừ thuế khấu trừ ' + num(lg.taxRate) + '% (bằng với thẻ "Tiền sắp nhận"). Sổ lãi hàng tháng cho ra các ngày chỉ nhận lãi; gốc chỉ về khi đáo hạn.' + (beyond ? ' Còn ' + beyond + ' sổ đáo hạn sau khoảng này.' : '') + '</div>';
+    }
+  }
+  box.innerHTML = h;
+  [].forEach.call(box.querySelectorAll('[data-lr]'), function(btn){
+    btn.onclick = function(){ LAD.range = Number(btn.getAttribute('data-lr')); LAD.page = 1; drawLadder(); };
+  });
+  [].forEach.call(box.querySelectorAll('[data-lv]'), function(btn){
+    btn.onclick = function(){ LAD.view = btn.getAttribute('data-lv'); LAD.page = 1; drawLadder(); };
+  });
+  [].forEach.call(box.querySelectorAll('[data-lp]'), function(btn){
+    btn.onclick = function(){ if (btn.disabled) return; LAD.page = Number(btn.getAttribute('data-lp')) || 1; drawLadder(); };
+  });
+  function mkSlot(){ return { p: 0, iE: 0, iM: 0, list: [] }; }
+}
+
 function rSav(){
   var h = '<div id="savDemand"></div>';
   h += '<div class="row"><h2>Sổ có kỳ hạn</h2><button class="btn" data-act="add" data-ent="savings">+ Thêm sổ</button></div>';
   h += '<div class="note">Bảng dưới là các sổ có kỳ hạn. Lãi cuối kỳ: gốc × lãi suất × số tháng / 12. Lãi hàng tháng: gốc × lãi suất / 12 mỗi tháng. Lãi tiền gửi tiết kiệm không chịu thuế TNCN.</div>';
+  h += '<div class="card" id="savLadder" style="margin-bottom:14px"></div>';
   var sortOpts = '<option value="">Thứ tự gốc (mặc định)</option>' + SAV_COLS.concat(SAV_EXTRA_SORT).map(function(c){ return '<option value="' + c.k + '">' + esc(c.l) + '</option>'; }).join('');
   h += '<div class="toolbar">' +
     '<input id="savQ" type="search" placeholder="Tìm theo tên sổ / ghi chú..." value="' + esc(SAVV.q) + '">' +
@@ -1062,6 +1355,7 @@ function rSav(){
     '</div><div id="savTbl"></div>';
   $('t-sav').innerHTML = h;
   drawDemand();
+  drawLadder();
   $('savQ').oninput = function(){ SAVV.q = this.value; SAVV.page = 1; drawSavTable(); };
   $('savType').onchange = function(){ SAVV.type = this.value; SAVV.page = 1; drawSavTable(); };
   $('savStatus').onchange = function(){ SAVV.status = this.value; SAVV.page = 1; drawSavTable(); };
@@ -1473,18 +1767,6 @@ function cfgSourceAt(month){
     .sort(function(a, b){ return String(a.from).localeCompare(String(b.from)); })
     .forEach(function(p){ out[p.key] = {value: String(p.value), src: p}; });
   return out;
-}
-function pagerHtml(page, pages){
-  var h = '<div class="pager"><button data-pg="' + (page - 1) + '"' + (page <= 1 ? ' disabled' : '') + '>‹ Trước</button>';
-  var nums = [];
-  for (var i = 1; i <= pages; i++) if (pages <= 7 || i === 1 || i === pages || Math.abs(i - page) <= 1) nums.push(i);
-  var prev = 0;
-  nums.forEach(function(i){
-    if (i - prev > 1) h += '<span class="sub">…</span>';
-    h += '<button data-pg="' + i + '" class="' + (i === page ? 'on' : '') + '">' + i + '</button>';
-    prev = i;
-  });
-  return h + '<button data-pg="' + (page + 1) + '"' + (page >= pages ? ' disabled' : '') + '>Sau ›</button></div>';
 }
 function lookupHtml(){
   if (!/^\d{4}-\d{2}$/.test(perMonth)) return '';
